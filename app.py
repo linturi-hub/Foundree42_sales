@@ -1,10 +1,9 @@
-
 import streamlit as st
 import google.generativeai as genai
 import sqlite3
 import json
 import re
-import time
+import requests
 from datetime import datetime
 
 st.set_page_config(
@@ -37,9 +36,14 @@ with st.sidebar:
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM leads")
         total = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM leads WHERE score >= 80")
+        c.execute(
+            "SELECT COUNT(*) FROM leads WHERE score >= 80"
+        )
         hot = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM leads WHERE status = ?", ("contacted",))
+        c.execute(
+            "SELECT COUNT(*) FROM leads WHERE status=?",
+            ("contacted",)
+        )
         contacted = c.fetchone()[0]
         conn.close()
     except:
@@ -59,23 +63,15 @@ def init_db():
         CREATE TABLE IF NOT EXISTS leads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company TEXT NOT NULL,
-            industry TEXT,
-            size TEXT,
-            hq TEXT,
-            ceo TEXT,
-            current_crm TEXT,
-            score INTEGER,
-            overview TEXT,
-            pain_points TEXT,
-            recent_triggers TEXT,
-            best_contact TEXT,
-            pitch_angle TEXT,
+            industry TEXT, size TEXT, hq TEXT,
+            ceo TEXT, current_crm TEXT,
+            score INTEGER, overview TEXT,
+            pain_points TEXT, recent_triggers TEXT,
+            best_contact TEXT, pitch_angle TEXT,
             status TEXT DEFAULT 'new',
             created_at TEXT,
-            linkedin_dm TEXT,
-            cold_email TEXT,
-            subject_line TEXT,
-            followup TEXT,
+            linkedin_dm TEXT, cold_email TEXT,
+            subject_line TEXT, followup TEXT,
             connection_note TEXT
         )
     """)
@@ -87,7 +83,7 @@ def save_lead(data):
     c = conn.cursor()
     c.execute(
         "SELECT id FROM leads WHERE company=?",
-        (data.get("company", ""),)
+        (data.get("company",""),)
     )
     existing = c.fetchone()
     if existing:
@@ -102,18 +98,18 @@ def save_lead(data):
             status, created_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        data.get("company", ""),
-        data.get("industry", ""),
-        data.get("size", ""),
-        data.get("hq", ""),
-        data.get("ceo", ""),
-        data.get("current_crm", ""),
-        data.get("score", 0),
-        data.get("overview", ""),
-        json.dumps(data.get("pain_points", [])),
-        json.dumps(data.get("recent_triggers", [])),
-        data.get("best_contact_title", ""),
-        data.get("pitch_angle", ""),
+        data.get("company",""),
+        data.get("industry",""),
+        data.get("size",""),
+        data.get("hq",""),
+        data.get("ceo",""),
+        data.get("current_crm",""),
+        data.get("score",0),
+        data.get("overview",""),
+        json.dumps(data.get("pain_points",[])),
+        json.dumps(data.get("recent_triggers",[])),
+        data.get("best_contact_title",""),
+        data.get("pitch_angle",""),
         "new",
         datetime.now().strftime("%Y-%m-%d %H:%M")
     ))
@@ -126,18 +122,16 @@ def save_messages(company, messages):
     conn = sqlite3.connect("foundree42.db")
     conn.execute("""
         UPDATE leads SET
-        linkedin_dm=?,
-        cold_email=?,
-        subject_line=?,
-        followup=?,
+        linkedin_dm=?, cold_email=?,
+        subject_line=?, followup=?,
         connection_note=?
         WHERE company=?
     """, (
-        messages.get("linkedin_dm", ""),
-        messages.get("cold_email", ""),
-        messages.get("subject_line", ""),
-        messages.get("followup", ""),
-        messages.get("connection_note", ""),
+        messages.get("linkedin_dm",""),
+        messages.get("cold_email",""),
+        messages.get("subject_line",""),
+        messages.get("followup",""),
+        messages.get("connection_note",""),
         company
     ))
     conn.commit()
@@ -155,40 +149,62 @@ def update_status(company, status):
 def get_all_leads():
     conn = sqlite3.connect("foundree42.db")
     c = conn.cursor()
-    c.execute("SELECT * FROM leads ORDER BY score DESC")
+    c.execute(
+        "SELECT * FROM leads ORDER BY score DESC"
+    )
     leads = c.fetchall()
     conn.close()
     return leads
 
 # ── AI FUNCTIONS ──────────────────────────────────
-def research_company(company, contact="", title=""):
+def get_model():
     if not st.session_state.get("api_key"):
+        return None
+    return genai.GenerativeModel(
+        model_name="models/gemini-1.5-flash"
+    )
+
+def research_company(company, contact="", title=""):
+    model = get_model()
+    if not model:
         return {"error": "No API key"}
 
-    model = genai.GenerativeModel(
-        model_name="models/gemini-2.5-flash",
-        tools="google_search"
-    )
+    prompt = """
+You are a sales intelligence analyst for Foundree42,
+a Salesforce consultancy based in the UK.
 
-    prompt = (
-        "Research " + company + " for Foundree42, "
-        "a Salesforce consultancy. "
-        + ("Contact: " + contact + ", " + title if contact else "")
-        + " Return ONLY valid JSON: {"
-        + '"company": "' + company + '",'
-        + '"overview": "2-3 sentence summary",'
-        + '"industry": "industry",'
-        + '"size": "employee count",'
-        + '"hq": "city, country",'
-        + '"ceo": "CEO name",'
-        + '"current_crm": "CRM or Unknown",'
-        + '"score": 0,'
-        + '"pain_points": ["pain 1","pain 2","pain 3"],'
-        + '"recent_triggers": ["trigger 1"],'
-        + '"best_contact_title": "who to target",'
-        + '"pitch_angle": "one sentence pitch"'
-        + "} Return ONLY the JSON."
-    )
+Research this company and provide detailed intelligence:
+Company: """ + company + """
+""" + (f"Contact: {contact}, Title: {title}" if contact else "") + """
+
+Based on your knowledge of this company provide:
+
+Return ONLY valid JSON with no markdown:
+{
+    "company": \"""" + company + """\",
+    "overview": "detailed 2-3 sentence summary",
+    "industry": "specific industry",
+    "size": "employee count estimate",
+    "hq": "city and country",
+    "ceo": "CEO or founder name",
+    "current_crm": "CRM they likely use or Unknown",
+    "score": integer 0-100 for Salesforce fit,
+    "pain_points": [
+        "specific pain point 1",
+        "specific pain point 2",
+        "specific pain point 3"
+    ],
+    "recent_triggers": [
+        "recent news or signal 1",
+        "recent news or signal 2"
+    ],
+    "best_contact_title": "ideal job title to target",
+    "key_people": ["Name - Title"],
+    "pitch_angle": "one specific sentence how Foundree42 can help"
+}
+
+Return ONLY the JSON object. No explanation. No markdown.
+"""
 
     try:
         response = model.generate_content(prompt)
@@ -202,69 +218,100 @@ def discover_leads(
     industry, location, revenue,
     company_type, size, signals, count
 ):
-    if not st.session_state.get("api_key"):
+    model = get_model()
+    if not model:
         return []
 
-    model = genai.GenerativeModel(
-        model_name="models/gemini-2.5-flash",
-        tools="google_search"
-    )
+    prompt = """
+You are a lead generation specialist for Foundree42,
+a Salesforce consultancy based in the UK.
 
-    prompt = (
-        "Find " + str(count) + " real companies for "
-        "Foundree42 (Salesforce consultancy) matching: "
-        "Type: " + company_type + " Industry: " + industry
-        + " Location: " + location
-        + " Revenue: " + revenue
-        + " Size: " + size
-        + " Signals: " + signals
-        + " Return ONLY a JSON array: "
-        + '[{"company":"name","industry":"industry",'
-        + '"size":"size","location":"location",'
-        + '"revenue":"revenue","why_fit":"why fit",'
-        + '"trigger":"buying signal",'
-        + '"best_contact":"job title","score":0}]'
-        + " Return ONLY the JSON array."
-    )
+Find """ + str(count) + """ real companies that are
+ideal Salesforce consultancy clients matching:
+
+- Industry: """ + industry + """
+- Location: """ + location + """
+- Revenue: """ + revenue + """
+- Size: """ + size + """
+- Type: """ + company_type + """
+- Buying Signals: """ + signals + """
+
+Think about companies that:
+- Are growing their sales teams rapidly
+- Have recently raised funding
+- Are expanding into new markets
+- Are likely using basic or outdated CRM tools
+- Have posted jobs mentioning CRM or Sales Operations
+- Would benefit from Salesforce implementation
+
+Return ONLY a valid JSON array with no markdown:
+[
+    {
+        "company": "Real company name",
+        "industry": "specific industry",
+        "size": "employee estimate",
+        "location": "city, country",
+        "revenue": "revenue estimate",
+        "why_fit": "specific reason they need Salesforce",
+        "trigger": "specific buying signal",
+        "best_contact": "ideal job title",
+        "score": integer 0-100
+    }
+]
+
+Return ONLY the JSON array. No explanation. No markdown.
+"""
 
     try:
         response = model.generate_content(prompt)
         raw = response.text
         clean = re.sub(r"```json|```", "", raw).strip()
         return json.loads(clean)
-    except:
+    except Exception as e:
+        st.error("Discovery error: " + str(e))
         return []
 
 def generate_messages(lead_data, feedback=""):
-    if not st.session_state.get("api_key"):
+    model = get_model()
+    if not model:
         return {"error": "No API key"}
 
-    model = genai.GenerativeModel(
-        model_name="models/gemini-1.5-flash"
-    )
+    feedback_text = ""
+    if feedback:
+        feedback_text = "\nApply this feedback: " + feedback
 
-    feedback_text = (
-        "Apply this feedback: " + feedback
-        if feedback else ""
-    )
+    prompt = """
+You are a senior sales writer at Foundree42,
+a Salesforce consultancy firm based in the UK.
 
-    prompt = (
-        "Write outreach for "
-        + lead_data.get("company", "")
-        + " for Foundree42, a Salesforce consultancy. "
-        + "Company details: " + json.dumps(lead_data)
-        + " " + feedback_text
-        + " Rules: reference specific company facts, "
-        + "never say I hope this finds you well, "
-        + "sound human, sign off as Foundree42 team. "
-        + "Return ONLY valid JSON: {"
-        + '"subject_line":"subject under 10 words",'
-        + '"linkedin_dm":"DM under 180 words",'
-        + '"cold_email":"email 150-200 words",'
-        + '"followup":"followup under 120 words",'
-        + '"connection_note":"connection note under 70 words"'
-        + "} Return ONLY the JSON."
-    )
+Write personalised outreach messages for:
+Company: """ + lead_data.get("company","") + """
+Industry: """ + lead_data.get("industry","") + """
+Overview: """ + lead_data.get("overview","") + """
+Pain Points: """ + str(lead_data.get("pain_points",[])) + """
+Recent Triggers: """ + str(lead_data.get("recent_triggers",[])) + """
+Pitch Angle: """ + lead_data.get("pitch_angle","") + """
+""" + feedback_text + """
+
+Rules:
+- Reference SPECIFIC facts about this company
+- Never say 'I hope this finds you well'
+- Never say 'I wanted to reach out'
+- Sound human, not templated
+- Sign off as the Foundree42 team
+- Focus on THEIR problem not our features
+
+Return ONLY valid JSON with no markdown:
+{
+    "subject_line": "compelling subject under 10 words",
+    "linkedin_dm": "LinkedIn DM under 180 words ending with soft CTA",
+    "cold_email": "cold email 150-200 words ending with one easy question",
+    "followup": "follow-up under 120 words with new angle",
+    "connection_note": "LinkedIn connection request under 70 words"
+}
+
+Return ONLY the JSON. No explanation. No markdown.
+"""
 
     try:
         response = model.generate_content(prompt)
@@ -274,25 +321,25 @@ def generate_messages(lead_data, feedback=""):
     except Exception as e:
         return {"error": str(e)}
 
-# ── INIT DB ───────────────────────────────────────
+# ── INIT ──────────────────────────────────────────
 init_db()
 
 # ── TABS ──────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
-    "Lead Discovery",
-    "Company Research",
-    "LinkedIn Workflow",
-    "Lead Database"
+    "🔍 Lead Discovery",
+    "🏢 Company Research",
+    "💼 LinkedIn Workflow",
+    "📊 Lead Database"
 ])
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 # TAB 1 — LEAD DISCOVERY
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 with tab1:
-    st.markdown("## Lead Discovery")
+    st.markdown("## 🔍 Lead Discovery")
     st.markdown(
-        "Describe your ideal client and AI finds "
-        "matching companies with live buying signals."
+        "Describe your ideal client and AI will find "
+        "matching companies with buying signals."
     )
 
     c1, c2 = st.columns(2)
@@ -301,11 +348,11 @@ with tab1:
             "Company Type", ["B2B", "B2C", "Both"]
         )
         icp_industry = st.text_input(
-            "Industry",
+            "Industry *",
             placeholder="e.g. Manufacturing, SaaS, Retail"
         )
         icp_location = st.text_input(
-            "Location",
+            "Location *",
             placeholder="e.g. Arizona, United States"
         )
     with c2:
@@ -321,23 +368,27 @@ with tab1:
             "Under $500M", "Under $1 billion",
             "Over $1 billion", "Any revenue"
         ])
-        icp_count = st.slider("Leads to find", 3, 10, 5)
+        icp_count = st.slider(
+            "Number of leads to find", 3, 10, 5
+        )
 
     icp_signals = st.text_area(
-        "Buying Signals",
+        "Buying Signals to Look For",
         placeholder=(
-            "e.g. hiring salesforce roles, recent funding, "
-            "new CRM job postings, scaling operations..."
+            "e.g. hiring sales roles, recent funding, "
+            "scaling operations, new CRM job postings..."
         )
     )
 
-    if st.button("Discover Leads", type="primary"):
+    if st.button("🚀 Discover Leads", type="primary"):
         if not st.session_state.get("api_key"):
-            st.error("Add your API key in the sidebar.")
+            st.error("Add your Gemini API key in the sidebar.")
         elif not icp_industry or not icp_location:
-            st.error("Fill in industry and location.")
+            st.error("Please fill in Industry and Location.")
         else:
-            with st.spinner("Searching the market..."):
+            with st.spinner(
+                "Searching for matching companies..."
+            ):
                 found = discover_leads(
                     industry=icp_industry,
                     location=icp_location,
@@ -347,11 +398,16 @@ with tab1:
                     signals=icp_signals or "hiring, funding, scaling",
                     count=icp_count
                 )
+
             if found:
-                st.success("Found " + str(len(found)) + " leads!")
+                st.success(
+                    "Found " + str(len(found)) + " leads!"
+                )
                 st.session_state["discovered"] = found
             else:
-                st.warning("No leads found. Try broader criteria.")
+                st.warning(
+                    "No leads found. Try broader criteria."
+                )
 
     if st.session_state.get("discovered"):
         st.markdown("---")
@@ -360,54 +416,62 @@ with tab1:
             key=lambda x: x.get("score", 0),
             reverse=True
         )
+
         for i, lead in enumerate(leads_sorted):
             score = lead.get("score", 0)
             label = (
-                "HOT" if score >= 80
-                else "WARM" if score >= 60
-                else "COLD"
+                "🟢 HOT" if score >= 80
+                else "🟡 WARM" if score >= 60
+                else "🔴 COLD"
             )
             with st.expander(
-                lead.get("company", "") +
-                " — " + str(score) + "/100 [" + label + "]",
+                lead.get("company","") + " — " +
+                str(score) + "/100 " + label,
                 expanded=(i == 0)
             ):
                 col_a, col_b = st.columns([3, 1])
                 with col_a:
                     st.markdown(
                         "**Why they fit:** " +
-                        lead.get("why_fit", "")
+                        lead.get("why_fit","")
                     )
                     st.markdown(
                         "**Buying signal:** " +
-                        lead.get("trigger", "")
+                        lead.get("trigger","")
                     )
                     st.markdown(
                         "**Best contact:** " +
-                        lead.get("best_contact", "")
+                        lead.get("best_contact","")
+                    )
+                    st.caption(
+                        lead.get("location","") +
+                        " · " + lead.get("size","")
                     )
                 with col_b:
-                    st.metric("Score", str(score) + "/100")
-                    st.caption(lead.get("location", ""))
+                    st.metric(
+                        "Fit Score",
+                        str(score) + "/100"
+                    )
 
                 if st.button(
-                    "Research this company",
+                    "Research this company →",
                     key="disc_" + str(i)
                 ):
                     st.session_state["prefill"] = (
-                        lead.get("company", "")
+                        lead.get("company","")
                     )
                     st.info(
                         "Go to Company Research tab "
-                        "for " + lead.get("company", "")
+                        "for " + lead.get("company","")
                     )
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 # TAB 2 — COMPANY RESEARCH
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 with tab2:
-    st.markdown("## Company Research Pipeline")
+    st.markdown("## 🏢 Company Research Pipeline")
     st.markdown(
+        "Full AI pipeline: "
         "Research → Pitch Angle → Outreach Messages"
     )
 
@@ -415,15 +479,17 @@ with tab2:
     with col1:
         company_input = st.text_input(
             "Company Name *",
-            value=st.session_state.get("prefill", ""),
-            placeholder="e.g. Universal Avionics"
+            value=st.session_state.get("prefill",""),
+            placeholder="e.g. Gymshark"
         )
         contact_input = st.text_input(
-            "Contact Name (optional)"
+            "Contact Name (optional)",
+            placeholder="e.g. Sarah Johnson"
         )
     with col2:
         title_input = st.text_input(
-            "Contact Title (optional)"
+            "Contact Title (optional)",
+            placeholder="e.g. VP of Sales"
         )
         feedback_input = st.text_area(
             "Boss Feedback to Apply",
@@ -437,10 +503,10 @@ with tab2:
     col_x, col_y = st.columns(2)
     with col_x:
         run_pipeline = st.button(
-            "Run Full Pipeline", type="primary"
+            "⚡ Run Full Pipeline", type="primary"
         )
     with col_y:
-        research_only = st.button("Research Only")
+        research_only = st.button("🔍 Research Only")
 
     if run_pipeline or research_only:
         if not st.session_state.get("api_key"):
@@ -460,38 +526,48 @@ with tab2:
             if "error" not in intel:
                 score = intel.get("score", 0)
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Industry", intel.get("industry", "—"))
-                m2.metric("Size", intel.get("size", "—"))
-                m3.metric("Fit Score", str(score) + "/100")
+                m1.metric(
+                    "Industry",
+                    intel.get("industry","—")
+                )
+                m2.metric(
+                    "Size",
+                    intel.get("size","—")
+                )
+                m3.metric(
+                    "Fit Score",
+                    str(score) + "/100"
+                )
 
                 st.markdown(
-                    "**Overview:** " + intel.get("overview", "")
+                    "**Overview:** " +
+                    intel.get("overview","")
                 )
 
                 col_p, col_t = st.columns(2)
                 with col_p:
                     if intel.get("pain_points"):
-                        st.markdown("**Pain Points:**")
+                        st.markdown("**🔴 Pain Points:**")
                         for p in intel["pain_points"]:
                             st.markdown("- " + p)
                 with col_t:
                     if intel.get("recent_triggers"):
-                        st.markdown("**Recent Triggers:**")
+                        st.markdown("**🟢 Recent Triggers:**")
                         for t in intel["recent_triggers"]:
                             st.markdown("- " + t)
 
                 st.info(
-                    "Best Contact: " +
-                    intel.get("best_contact_title", "")
+                    "🎯 Best Contact: " +
+                    intel.get("best_contact_title","")
                 )
                 st.success(
-                    "Pitch Angle: " +
-                    intel.get("pitch_angle", "")
+                    "💡 Pitch Angle: " +
+                    intel.get("pitch_angle","")
                 )
 
                 if run_pipeline:
                     st.markdown("---")
-                    st.markdown("### Outreach Messages")
+                    st.markdown("### ✉️ Outreach Messages")
 
                     with st.spinner(
                         "Writing personalised messages..."
@@ -509,40 +585,41 @@ with tab2:
                         ])
                         with mt1:
                             st.text_area(
-                                "LinkedIn DM",
-                                messages.get("linkedin_dm", ""),
+                                "LinkedIn DM — copy and paste",
+                                messages.get("linkedin_dm",""),
                                 height=200,
                                 key="li_msg"
                             )
                         with mt2:
                             st.markdown(
-                                "**Subject:** " +
-                                messages.get("subject_line", "")
+                                "**Subject Line:** `" +
+                                messages.get("subject_line","") +
+                                "`"
                             )
                             st.text_area(
                                 "Email Body",
-                                messages.get("cold_email", ""),
+                                messages.get("cold_email",""),
                                 height=200,
                                 key="em_msg"
                             )
                         with mt3:
                             st.text_area(
-                                "Follow-up",
-                                messages.get("followup", ""),
+                                "Follow-up Message",
+                                messages.get("followup",""),
                                 height=150,
                                 key="fu_msg"
                             )
                         with mt4:
                             st.text_area(
                                 "Connection Note",
-                                messages.get("connection_note", ""),
+                                messages.get("connection_note",""),
                                 height=100,
                                 key="cn_msg"
                             )
 
                         st.markdown("---")
                         if st.button(
-                            "Save Lead + Messages to Database",
+                            "💾 Save Lead + Messages",
                             type="primary"
                         ):
                             save_lead(intel)
@@ -550,27 +627,27 @@ with tab2:
                                 company_input, messages
                             )
                             st.success(
-                                company_input +
+                                "✅ " + company_input +
                                 " saved to database!"
                             )
                     else:
                         st.error(
-                            "Message generation failed: " +
-                            str(messages.get("error"))
+                            "Message error: " +
+                            str(messages.get("error",""))
                         )
             else:
                 st.error(
                     "Research failed: " +
-                    str(intel.get("error", ""))
+                    str(intel.get("error",""))
                 )
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 # TAB 3 — LINKEDIN WORKFLOW
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 with tab3:
-    st.markdown("## LinkedIn Workflow")
+    st.markdown("## 💼 LinkedIn Workflow")
     st.markdown(
-        "One-click workflow to contact each lead on LinkedIn."
+        "One-click workflow to contact each lead."
     )
 
     all_leads = get_all_leads()
@@ -578,31 +655,45 @@ with tab3:
     if not all_leads:
         st.info(
             "No leads yet. Run Lead Discovery or "
-            "Company Research first."
+            "Company Research first then save leads."
         )
     else:
         for lead in all_leads:
-            comp    = lead[1]
-            target  = lead[11] or "VP of Sales"
-            score   = lead[7] or 0
-            status  = lead[13] or "new"
+            comp      = lead[1]
+            target    = lead[11] or "VP of Sales"
+            score     = lead[7] or 0
+            status    = lead[13] or "new"
             conn_note = lead[19] if len(lead) > 19 else ""
-            li_dm   = lead[15] if len(lead) > 15 else ""
+            li_dm     = lead[15] if len(lead) > 15 else ""
+
+            status_icon = (
+                "🟢" if status == "replied"
+                else "🟡" if status == "contacted"
+                else "⚪"
+            )
 
             with st.expander(
-                comp + " — " + str(score) +
-                "/100 — " + status
+                status_icon + " " + comp +
+                " — " + str(score) + "/100 — " + status
             ):
                 search_url = (
                     "https://www.linkedin.com/"
                     "search/results/people/?keywords=" +
-                    (target + " " + comp).replace(" ", "%20")
+                    (target + " " + comp).replace(
+                        " ", "%20"
+                    )
                 )
 
-                st.markdown("**Target Role:** " + target)
                 st.markdown(
-                    "**[Click to find on LinkedIn](" +
+                    "**Target Role:** " + target
+                )
+                st.markdown(
+                    "**[🔗 Find on LinkedIn](" +
                     search_url + ")**"
+                )
+                st.caption(
+                    "Click link → find the person → "
+                    "send connection note below"
                 )
 
                 if conn_note:
@@ -613,26 +704,27 @@ with tab3:
                         height=80,
                         key="cn_li_" + str(lead[0])
                     )
-
                 if li_dm:
-                    st.markdown("**LinkedIn DM:**")
+                    st.markdown(
+                        "**LinkedIn DM** "
+                        "(send after they accept):"
+                    )
                     st.text_area(
-                        "Send after they accept",
+                        "Copy this DM",
                         li_dm,
                         height=150,
                         key="dm_li_" + str(lead[0])
                     )
-
                 if not conn_note and not li_dm:
                     st.info(
-                        "Run full pipeline in Company "
+                        "Run Full Pipeline in Company "
                         "Research tab to generate messages."
                     )
 
                 col_s1, col_s2, col_s3 = st.columns(3)
                 with col_s1:
                     if st.button(
-                        "Mark Contacted",
+                        "✅ Mark Contacted",
                         key="c_" + str(lead[0])
                     ):
                         update_status(comp, "contacted")
@@ -640,7 +732,7 @@ with tab3:
                         st.rerun()
                 with col_s2:
                     if st.button(
-                        "Mark Replied",
+                        "💬 Mark Replied",
                         key="r_" + str(lead[0])
                     ):
                         update_status(comp, "replied")
@@ -648,62 +740,93 @@ with tab3:
                         st.rerun()
                 with col_s3:
                     if st.button(
-                        "Mark Closed",
+                        "🏁 Mark Closed",
                         key="cl_" + str(lead[0])
                     ):
                         update_status(comp, "closed")
                         st.success("Updated!")
                         st.rerun()
 
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 # TAB 4 — LEAD DATABASE
-# ════════════════════════════════════════════
+# ════════════════════════════════════════════════
 with tab4:
-    st.markdown("## Lead Database")
+    st.markdown("## 📊 Lead Database")
 
     all_leads_db = get_all_leads()
 
     if not all_leads_db:
-        st.info("No leads saved yet.")
+        st.info(
+            "No leads saved yet. Research companies "
+            "and save them to see them here."
+        )
     else:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Leads", len(all_leads_db))
         m2.metric(
             "Hot 80+",
-            len([l for l in all_leads_db if (l[7] or 0) >= 80])
+            len([
+                l for l in all_leads_db
+                if (l[7] or 0) >= 80
+            ])
         )
         m3.metric(
             "Contacted",
-            len([l for l in all_leads_db if l[13] == "contacted"])
+            len([
+                l for l in all_leads_db
+                if l[13] == "contacted"
+            ])
         )
         m4.metric(
             "Replied",
-            len([l for l in all_leads_db if l[13] == "replied"])
+            len([
+                l for l in all_leads_db
+                if l[13] == "replied"
+            ])
         )
 
         st.markdown("---")
 
         status_filter = st.selectbox(
             "Filter by status",
-            ["All", "new", "ready_to_contact",
-             "contacted", "replied", "closed"]
+            [
+                "All", "new", "ready_to_contact",
+                "contacted", "replied", "closed"
+            ]
         )
 
-        for lead in all_leads_db:
-            if (status_filter != "All" and
-                    lead[13] != status_filter):
-                continue
+        min_score = st.slider(
+            "Minimum score", 0, 100, 0
+        )
 
+        filtered = [
+            l for l in all_leads_db
+            if (status_filter == "All" or
+                l[13] == status_filter)
+            and (l[7] or 0) >= min_score
+        ]
+
+        st.caption(
+            "Showing " + str(len(filtered)) + " leads"
+        )
+
+        for lead in filtered:
             score = lead[7] or 0
+            icon = (
+                "🟢" if score >= 80
+                else "🟡" if score >= 60
+                else "🔴"
+            )
             with st.expander(
-                lead[1] + " | Score: " +
-                str(score) + "/100 | " +
+                icon + " " + lead[1] +
+                " | " + str(score) + "/100 | " +
                 (lead[13] or "new")
             ):
                 d1, d2 = st.columns(2)
                 with d1:
                     st.markdown(
-                        "**Industry:** " + (lead[2] or "—")
+                        "**Industry:** " +
+                        (lead[2] or "—")
                     )
                     st.markdown(
                         "**Size:** " + (lead[3] or "—")
@@ -717,13 +840,16 @@ with tab4:
                     )
                 with d2:
                     st.markdown(
-                        "**Score:** " + str(score) + "/100"
+                        "**Score:** " +
+                        str(score) + "/100"
                     )
                     st.markdown(
-                        "**Added:** " + (lead[14] or "—")
+                        "**Added:** " +
+                        (lead[14] or "—")
                     )
                     st.markdown(
-                        "**Pitch:** " + (lead[12] or "—")
+                        "**Pitch:** " +
+                        (lead[12] or "—")
                     )
 
                 if lead[8]:
@@ -733,13 +859,14 @@ with tab4:
 
                 new_status = st.selectbox(
                     "Update status",
-                    ["new", "ready_to_contact",
-                     "contacted", "replied", "closed"],
-                    index=["new", "ready_to_contact",
-                           "contacted", "replied",
-                           "closed"].index(
-                        lead[13] or "new"
-                    ),
+                    [
+                        "new", "ready_to_contact",
+                        "contacted", "replied", "closed"
+                    ],
+                    index=[
+                        "new", "ready_to_contact",
+                        "contacted", "replied", "closed"
+                    ].index(lead[13] or "new"),
                     key="status_" + str(lead[0])
                 )
 
@@ -747,4 +874,3 @@ with tab4:
                     update_status(lead[1], new_status)
                     st.success("Status updated!")
                     st.rerun()
-
