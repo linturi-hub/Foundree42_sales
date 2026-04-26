@@ -161,7 +161,7 @@ def get_model():
     if not st.session_state.get("api_key"):
         return None
     return genai.GenerativeModel(
-        model_name="models/gemini-1.5-flash"
+        model_name="models/gemini-2.0-flash"
     )
 
 def research_company(company, contact="", title=""):
