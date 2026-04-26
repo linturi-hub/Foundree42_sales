@@ -167,7 +167,7 @@ def research_company(company, contact="", title=""):
 
     model = genai.GenerativeModel(
         model_name="models/gemini-2.5-flash",
-        tools="google_search_retrieval"
+        tools="google_search"
     )
 
     prompt = (
@@ -207,7 +207,7 @@ def discover_leads(
 
     model = genai.GenerativeModel(
         model_name="models/gemini-2.5-flash",
-        tools="google_search_retrieval"
+        tools="google_search"
     )
 
     prompt = (
@@ -326,7 +326,7 @@ with tab1:
     icp_signals = st.text_area(
         "Buying Signals",
         placeholder=(
-            "e.g. hiring sales roles, recent funding, "
+            "e.g. hiring salesforce roles, recent funding, "
             "new CRM job postings, scaling operations..."
         )
     )
