@@ -326,17 +326,17 @@ init_db()
 
 # ── TABS ──────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
-    "🔍 Lead Discovery",
-    "🏢 Company Research",
-    "💼 LinkedIn Workflow",
-    "📊 Lead Database"
+    "Lead Discovery",
+    "Company Research",
+    "LinkedIn Workflow",
+    "Lead Database"
 ])
 
 # ════════════════════════════════════════════════
 # TAB 1 — LEAD DISCOVERY
 # ════════════════════════════════════════════════
 with tab1:
-    st.markdown("## 🔍 Lead Discovery")
+    st.markdown("## Lead Discovery")
     st.markdown(
         "Describe your ideal client and AI will find "
         "matching companies with buying signals."
@@ -380,7 +380,7 @@ with tab1:
         )
     )
 
-    if st.button("🚀 Discover Leads", type="primary"):
+    if st.button("Discover Leads", type="primary"):
         if not st.session_state.get("api_key"):
             st.error("Add your Gemini API key in the sidebar.")
         elif not icp_industry or not icp_location:
@@ -469,7 +469,7 @@ with tab1:
 # TAB 2 — COMPANY RESEARCH
 # ════════════════════════════════════════════════
 with tab2:
-    st.markdown("## 🏢 Company Research Pipeline")
+    st.markdown("## Company Research Pipeline")
     st.markdown(
         "Full AI pipeline: "
         "Research → Pitch Angle → Outreach Messages"
@@ -503,10 +503,10 @@ with tab2:
     col_x, col_y = st.columns(2)
     with col_x:
         run_pipeline = st.button(
-            "⚡ Run Full Pipeline", type="primary"
+            "Run Full Pipeline", type="primary"
         )
     with col_y:
-        research_only = st.button("🔍 Research Only")
+        research_only = st.button("Research Only")
 
     if run_pipeline or research_only:
         if not st.session_state.get("api_key"):
@@ -567,7 +567,7 @@ with tab2:
 
                 if run_pipeline:
                     st.markdown("---")
-                    st.markdown("### ✉️ Outreach Messages")
+                    st.markdown("### Outreach Messages")
 
                     with st.spinner(
                         "Writing personalised messages..."
@@ -645,7 +645,7 @@ with tab2:
 # TAB 3 — LINKEDIN WORKFLOW
 # ════════════════════════════════════════════════
 with tab3:
-    st.markdown("## 💼 LinkedIn Workflow")
+    st.markdown("## LinkedIn Workflow")
     st.markdown(
         "One-click workflow to contact each lead."
     )
@@ -751,7 +751,7 @@ with tab3:
 # TAB 4 — LEAD DATABASE
 # ════════════════════════════════════════════════
 with tab4:
-    st.markdown("## 📊 Lead Database")
+    st.markdown("## Lead Database")
 
     all_leads_db = get_all_leads()
 
