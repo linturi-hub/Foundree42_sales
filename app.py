@@ -1,9 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
+import groq
 import sqlite3
 import json
 import re
-import requests
 from datetime import datetime
 
 st.set_page_config(
@@ -12,24 +11,348 @@ st.set_page_config(
     layout="wide"
 )
 
+# ── NEUMORPHISM CSS ───────────────────────────────
+st.markdown("""
+<style>
+    /* Base */
+    [data-testid="stAppViewContainer"] {
+        background-color: #e8ecf1;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #e8ecf1;
+        border-right: none;
+    }
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+    .main .block-container {
+        padding-top: 2rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+
+    /* Typography */
+    h1, h2, h3 {
+        color: #2d3748 !important;
+        font-family: 'Segoe UI', sans-serif !important;
+        font-weight: 600 !important;
+        letter-spacing: -0.5px !important;
+    }
+    p, li, label, .stMarkdown {
+        color: #4a5568 !important;
+        font-family: 'Segoe UI', sans-serif !important;
+    }
+
+    /* Neumorphic Card */
+    .neu-card {
+        background: #e8ecf1;
+        border-radius: 16px;
+        padding: 24px;
+        margin-bottom: 16px;
+        box-shadow:
+            6px 6px 12px #c5cad4,
+            -6px -6px 12px #ffffff;
+    }
+
+    /* Neumorphic Inset */
+    .neu-inset {
+        background: #e8ecf1;
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow:
+            inset 4px 4px 8px #c5cad4,
+            inset -4px -4px 8px #ffffff;
+    }
+
+    /* Inputs */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea,
+    .stSelectbox > div > div {
+        background: #e8ecf1 !important;
+        border: none !important;
+        border-radius: 10px !important;
+        color: #2d3748 !important;
+        font-family: 'Segoe UI', sans-serif !important;
+        box-shadow:
+            inset 3px 3px 6px #c5cad4,
+            inset -3px -3px 6px #ffffff !important;
+        padding: 10px 14px !important;
+    }
+
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus {
+        box-shadow:
+            inset 4px 4px 8px #b8bec9,
+            inset -4px -4px 8px #ffffff !important;
+    }
+
+    /* Buttons */
+    .stButton > button {
+        background: #e8ecf1 !important;
+        color: #2d3748 !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-family: 'Segoe UI', sans-serif !important;
+        font-weight: 600 !important;
+        padding: 10px 24px !important;
+        box-shadow:
+            4px 4px 8px #c5cad4,
+            -4px -4px 8px #ffffff !important;
+        transition: all 0.2s ease !important;
+    }
+
+    .stButton > button:hover {
+        box-shadow:
+            2px 2px 4px #c5cad4,
+            -2px -2px 4px #ffffff !important;
+        color: #4a6fa5 !important;
+    }
+
+    .stButton > button:active {
+        box-shadow:
+            inset 2px 2px 4px #c5cad4,
+            inset -2px -2px 4px #ffffff !important;
+    }
+
+    /* Primary button */
+    .stButton > button[kind="primary"] {
+        background: #4a6fa5 !important;
+        color: white !important;
+        box-shadow:
+            4px 4px 8px #c5cad4,
+            -4px -4px 8px #ffffff !important;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background: #3d5d8f !important;
+        color: white !important;
+    }
+
+    /* Metrics */
+    [data-testid="stMetric"] {
+        background: #e8ecf1;
+        border-radius: 14px;
+        padding: 16px 20px;
+        box-shadow:
+            5px 5px 10px #c5cad4,
+            -5px -5px 10px #ffffff;
+    }
+
+    [data-testid="stMetricLabel"] {
+        color: #718096 !important;
+        font-size: 0.75rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: #2d3748 !important;
+        font-size: 2rem !important;
+        font-weight: 700 !important;
+    }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #e8ecf1;
+        border-radius: 12px;
+        padding: 4px;
+        box-shadow:
+            inset 3px 3px 6px #c5cad4,
+            inset -3px -3px 6px #ffffff;
+        gap: 4px;
+        border-bottom: none !important;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        color: #718096;
+        border-radius: 8px;
+        font-family: 'Segoe UI', sans-serif;
+        font-weight: 500;
+        font-size: 0.875rem;
+        border: none !important;
+        padding: 8px 20px;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: #e8ecf1 !important;
+        color: #4a6fa5 !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+    }
+
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: #e8ecf1 !important;
+        border-radius: 10px !important;
+        border: none !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+        color: #2d3748 !important;
+        font-weight: 600 !important;
+        padding: 12px 16px !important;
+    }
+
+    .streamlit-expanderContent {
+        background: #e8ecf1 !important;
+        border: none !important;
+        border-radius: 0 0 10px 10px !important;
+        padding: 16px !important;
+    }
+
+    /* Slider */
+    .stSlider > div > div > div > div {
+        background: #4a6fa5 !important;
+    }
+
+    /* Selectbox */
+    .stSelectbox label {
+        color: #718096 !important;
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+
+    /* Text input label */
+    .stTextInput label,
+    .stTextArea label {
+        color: #718096 !important;
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+
+    /* Success / Info / Error */
+    .stSuccess {
+        background: #e8ecf1 !important;
+        border-left: 3px solid #68d391 !important;
+        border-radius: 10px !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+    }
+
+    .stInfo {
+        background: #e8ecf1 !important;
+        border-left: 3px solid #63b3ed !important;
+        border-radius: 10px !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+    }
+
+    .stError {
+        background: #e8ecf1 !important;
+        border-left: 3px solid #fc8181 !important;
+        border-radius: 10px !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+    }
+
+    .stWarning {
+        background: #e8ecf1 !important;
+        border-left: 3px solid #f6ad55 !important;
+        border-radius: 10px !important;
+        box-shadow:
+            3px 3px 6px #c5cad4,
+            -3px -3px 6px #ffffff;
+    }
+
+    /* Divider */
+    hr {
+        border: none !important;
+        height: 1px !important;
+        background: linear-gradient(
+            to right,
+            transparent,
+            #c5cad4,
+            transparent
+        ) !important;
+        margin: 1.5rem 0 !important;
+    }
+
+    /* Spinner */
+    .stSpinner > div {
+        border-top-color: #4a6fa5 !important;
+    }
+
+    /* Sidebar logo area */
+    .sidebar-brand {
+        background: #e8ecf1;
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow:
+            5px 5px 10px #c5cad4,
+            -5px -5px 10px #ffffff;
+        text-align: center;
+    }
+
+    .sidebar-brand h2 {
+        font-size: 1.5rem !important;
+        color: #2d3748 !important;
+        margin: 0 !important;
+    }
+
+    .sidebar-brand p {
+        font-size: 0.7rem !important;
+        color: #a0aec0 !important;
+        letter-spacing: 2px !important;
+        text-transform: uppercase !important;
+        margin: 4px 0 0 0 !important;
+    }
+
+    /* Score badge */
+    .score-high {
+        color: #38a169;
+        font-weight: 700;
+    }
+    .score-mid {
+        color: #d69e2e;
+        font-weight: 700;
+    }
+    .score-low {
+        color: #e53e3e;
+        font-weight: 700;
+    }
+
+    /* Caption */
+    .stCaption {
+        color: #a0aec0 !important;
+        font-size: 0.75rem !important;
+    }
+
+    /* Hide default streamlit branding */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
 # ── SIDEBAR ───────────────────────────────────────
 with st.sidebar:
-    st.markdown("## Foundree42")
-    st.markdown("#### Lead Intelligence Platform")
-    st.divider()
+    st.markdown("""
+    <div class="sidebar-brand">
+        <h2>Foundree42</h2>
+        <p>Lead Intelligence</p>
+    </div>
+    """, unsafe_allow_html=True)
 
     api_key = st.text_input(
-        "Gemini API Key",
+        "Groq API Key",
         type="password",
         placeholder="paste your key here"
     )
 
     if api_key:
-        genai.configure(api_key=api_key)
         st.session_state["api_key"] = api_key
-        st.success("API key set")
+        st.success("API key active")
 
-    st.divider()
+    st.markdown("---")
 
     try:
         conn = sqlite3.connect("foundree42.db")
@@ -49,11 +372,16 @@ with st.sidebar:
     except:
         total = hot = contacted = 0
 
-    st.metric("Total Leads", total)
-    st.metric("Hot Leads 80+", hot)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Total", total)
+    with col_b:
+        st.metric("Hot", hot)
+
     st.metric("Contacted", contacted)
-    st.divider()
-    st.caption("Built by Foundree42 Sales Team")
+
+    st.markdown("---")
+    st.caption("Built for Foundree42 Sales Team")
 
 # ── DATABASE ──────────────────────────────────────
 def init_db():
@@ -149,177 +477,133 @@ def update_status(company, status):
 def get_all_leads():
     conn = sqlite3.connect("foundree42.db")
     c = conn.cursor()
-    c.execute(
-        "SELECT * FROM leads ORDER BY score DESC"
-    )
+    c.execute("SELECT * FROM leads ORDER BY score DESC")
     leads = c.fetchall()
     conn.close()
     return leads
 
-# ── AI FUNCTIONS ──────────────────────────────────
-def get_model():
+# ── AI ────────────────────────────────────────────
+def ask_ai(prompt):
     if not st.session_state.get("api_key"):
-        return None
-    return genai.GenerativeModel(
-        model_name="models/gemini-2.0-flash"
-    )
+        return "ERROR: No API key"
+    try:
+        client = groq.Groq(
+            api_key=st.session_state["api_key"]
+        )
+        response = client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a sales intelligence "
+                        "analyst for Foundree42, a "
+                        "Salesforce consultancy in the UK. "
+                        "Always return valid JSON only. "
+                        "No markdown. No explanation."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return "ERROR: " + str(e)
+
+def parse_json(raw):
+    clean = re.sub(r"```json|```", "", raw).strip()
+    try:
+        return json.loads(clean)
+    except:
+        return {}
 
 def research_company(company, contact="", title=""):
-    model = get_model()
-    if not model:
-        return {"error": "No API key"}
-
-    prompt = """
-You are a sales intelligence analyst for Foundree42,
-a Salesforce consultancy based in the UK.
-
-Research this company and provide detailed intelligence:
-Company: """ + company + """
-""" + (f"Contact: {contact}, Title: {title}" if contact else "") + """
-
-Based on your knowledge of this company provide:
-
-Return ONLY valid JSON with no markdown:
-{
-    "company": \"""" + company + """\",
-    "overview": "detailed 2-3 sentence summary",
-    "industry": "specific industry",
-    "size": "employee count estimate",
-    "hq": "city and country",
-    "ceo": "CEO or founder name",
-    "current_crm": "CRM they likely use or Unknown",
-    "score": integer 0-100 for Salesforce fit,
-    "pain_points": [
-        "specific pain point 1",
-        "specific pain point 2",
-        "specific pain point 3"
-    ],
-    "recent_triggers": [
-        "recent news or signal 1",
-        "recent news or signal 2"
-    ],
-    "best_contact_title": "ideal job title to target",
-    "key_people": ["Name - Title"],
-    "pitch_angle": "one specific sentence how Foundree42 can help"
-}
-
-Return ONLY the JSON object. No explanation. No markdown.
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        raw = response.text
-        clean = re.sub(r"```json|```", "", raw).strip()
-        return json.loads(clean)
-    except Exception as e:
-        return {"error": str(e)}
+    prompt = (
+        "Research " + company + " for Foundree42, "
+        "a Salesforce consultancy. "
+        + ("Contact: " + contact + " " + title + ". " if contact else "")
+        + "Return ONLY this JSON with no markdown: "
+        + '{"company":"' + company + '",'
+        + '"overview":"2-3 sentence summary",'
+        + '"industry":"their industry",'
+        + '"size":"employee count estimate",'
+        + '"hq":"city and country",'
+        + '"ceo":"CEO name",'
+        + '"current_crm":"CRM they use or Unknown",'
+        + '"score":75,'
+        + '"pain_points":["pain 1","pain 2","pain 3"],'
+        + '"recent_triggers":["trigger 1","trigger 2"],'
+        + '"best_contact_title":"who to target",'
+        + '"pitch_angle":"one sentence pitch"}'
+    )
+    raw = ask_ai(prompt)
+    if raw.startswith("ERROR"):
+        return {"error": raw}
+    return parse_json(raw)
 
 def discover_leads(
     industry, location, revenue,
     company_type, size, signals, count
 ):
-    model = get_model()
-    if not model:
+    prompt = (
+        "Find " + str(count) + " real companies "
+        "that are ideal Salesforce consultancy clients. "
+        "Criteria: Industry=" + industry
+        + " Location=" + location
+        + " Revenue=" + revenue
+        + " Size=" + size
+        + " Type=" + company_type
+        + " Signals=" + signals
+        + ". Return ONLY a JSON array with no markdown: "
+        + '[{"company":"name",'
+        + '"industry":"industry",'
+        + '"size":"size",'
+        + '"location":"city, country",'
+        + '"revenue":"estimate",'
+        + '"why_fit":"why they need Salesforce",'
+        + '"trigger":"specific buying signal",'
+        + '"best_contact":"job title",'
+        + '"score":80}]'
+        + " Use real, specific company names only."
+    )
+    raw = ask_ai(prompt)
+    if raw.startswith("ERROR"):
+        st.error(raw)
         return []
-
-    prompt = """
-You are a lead generation specialist for Foundree42,
-a Salesforce consultancy based in the UK.
-
-Find """ + str(count) + """ real companies that are
-ideal Salesforce consultancy clients matching:
-
-- Industry: """ + industry + """
-- Location: """ + location + """
-- Revenue: """ + revenue + """
-- Size: """ + size + """
-- Type: """ + company_type + """
-- Buying Signals: """ + signals + """
-
-Think about companies that:
-- Are growing their sales teams rapidly
-- Have recently raised funding
-- Are expanding into new markets
-- Are likely using basic or outdated CRM tools
-- Have posted jobs mentioning CRM or Sales Operations
-- Would benefit from Salesforce implementation
-
-Return ONLY a valid JSON array with no markdown:
-[
-    {
-        "company": "Real company name",
-        "industry": "specific industry",
-        "size": "employee estimate",
-        "location": "city, country",
-        "revenue": "revenue estimate",
-        "why_fit": "specific reason they need Salesforce",
-        "trigger": "specific buying signal",
-        "best_contact": "ideal job title",
-        "score": integer 0-100
-    }
-]
-
-Return ONLY the JSON array. No explanation. No markdown.
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        raw = response.text
-        clean = re.sub(r"```json|```", "", raw).strip()
-        return json.loads(clean)
-    except Exception as e:
-        st.error("Discovery error: " + str(e))
-        return []
+    result = parse_json(raw)
+    if isinstance(result, list):
+        return result
+    return []
 
 def generate_messages(lead_data, feedback=""):
-    model = get_model()
-    if not model:
-        return {"error": "No API key"}
-
-    feedback_text = ""
-    if feedback:
-        feedback_text = "\nApply this feedback: " + feedback
-
-    prompt = """
-You are a senior sales writer at Foundree42,
-a Salesforce consultancy firm based in the UK.
-
-Write personalised outreach messages for:
-Company: """ + lead_data.get("company","") + """
-Industry: """ + lead_data.get("industry","") + """
-Overview: """ + lead_data.get("overview","") + """
-Pain Points: """ + str(lead_data.get("pain_points",[])) + """
-Recent Triggers: """ + str(lead_data.get("recent_triggers",[])) + """
-Pitch Angle: """ + lead_data.get("pitch_angle","") + """
-""" + feedback_text + """
-
-Rules:
-- Reference SPECIFIC facts about this company
-- Never say 'I hope this finds you well'
-- Never say 'I wanted to reach out'
-- Sound human, not templated
-- Sign off as the Foundree42 team
-- Focus on THEIR problem not our features
-
-Return ONLY valid JSON with no markdown:
-{
-    "subject_line": "compelling subject under 10 words",
-    "linkedin_dm": "LinkedIn DM under 180 words ending with soft CTA",
-    "cold_email": "cold email 150-200 words ending with one easy question",
-    "followup": "follow-up under 120 words with new angle",
-    "connection_note": "LinkedIn connection request under 70 words"
-}
-
-Return ONLY the JSON. No explanation. No markdown.
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        raw = response.text
-        clean = re.sub(r"```json|```", "", raw).strip()
-        return json.loads(clean)
-    except Exception as e:
-        return {"error": str(e)}
+    prompt = (
+        "Write personalised Salesforce consultancy "
+        "outreach for " + lead_data.get("company","")
+        + ". Industry=" + lead_data.get("industry","")
+        + " Overview=" + lead_data.get("overview","")
+        + " Pain points=" + str(lead_data.get("pain_points",[]))
+        + " Triggers=" + str(lead_data.get("recent_triggers",[]))
+        + " Pitch=" + lead_data.get("pitch_angle","")
+        + (". Apply feedback: " + feedback if feedback else "")
+        + ". Rules: reference specific company facts, "
+        + "never say I hope this finds you well, "
+        + "sound human, sign off as Foundree42 team. "
+        + "Return ONLY this JSON with no markdown: "
+        + '{"subject_line":"subject under 10 words",'
+        + '"linkedin_dm":"DM under 180 words",'
+        + '"cold_email":"email 150-200 words",'
+        + '"followup":"followup under 120 words",'
+        + '"connection_note":"connection note under 70 words"}'
+    )
+    raw = ask_ai(prompt)
+    if raw.startswith("ERROR"):
+        return {"error": raw}
+    return parse_json(raw)
 
 # ── INIT ──────────────────────────────────────────
 init_db()
@@ -338,21 +622,23 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.markdown("## Lead Discovery")
     st.markdown(
-        "Describe your ideal client and AI will find "
-        "matching companies with buying signals."
+        "Define your ideal client profile and the AI "
+        "will find matching companies with live buying signals."
     )
+    st.markdown("---")
 
     c1, c2 = st.columns(2)
     with c1:
         icp_type = st.selectbox(
-            "Company Type", ["B2B", "B2C", "Both"]
+            "Company Type",
+            ["B2B", "B2C", "Both"]
         )
         icp_industry = st.text_input(
-            "Industry *",
+            "Industry",
             placeholder="e.g. Manufacturing, SaaS, Retail"
         )
         icp_location = st.text_input(
-            "Location *",
+            "Location",
             placeholder="e.g. Arizona, United States"
         )
     with c2:
@@ -364,12 +650,15 @@ with tab1:
             "Any size"
         ])
         icp_revenue = st.selectbox("Revenue", [
-            "Under $10M", "Under $100M",
-            "Under $500M", "Under $1 billion",
-            "Over $1 billion", "Any revenue"
+            "Under $10M",
+            "Under $100M",
+            "Under $500M",
+            "Under $1 billion",
+            "Over $1 billion",
+            "Any revenue"
         ])
         icp_count = st.slider(
-            "Number of leads to find", 3, 10, 5
+            "Number of leads", 3, 10, 5
         )
 
     icp_signals = st.text_area(
@@ -377,18 +666,19 @@ with tab1:
         placeholder=(
             "e.g. hiring sales roles, recent funding, "
             "scaling operations, new CRM job postings..."
-        )
+        ),
+        height=80
     )
+
+    st.markdown("---")
 
     if st.button("Discover Leads", type="primary"):
         if not st.session_state.get("api_key"):
-            st.error("Add your Gemini API key in the sidebar.")
+            st.error("Add your Groq API key in the sidebar.")
         elif not icp_industry or not icp_location:
             st.error("Please fill in Industry and Location.")
         else:
-            with st.spinner(
-                "Searching for matching companies..."
-            ):
+            with st.spinner("Searching for matching companies..."):
                 found = discover_leads(
                     industry=icp_industry,
                     location=icp_location,
@@ -398,16 +688,13 @@ with tab1:
                     signals=icp_signals or "hiring, funding, scaling",
                     count=icp_count
                 )
-
             if found:
                 st.success(
-                    "Found " + str(len(found)) + " leads!"
+                    "Found " + str(len(found)) + " leads"
                 )
                 st.session_state["discovered"] = found
             else:
-                st.warning(
-                    "No leads found. Try broader criteria."
-                )
+                st.warning("No leads found. Try broader criteria.")
 
     if st.session_state.get("discovered"):
         st.markdown("---")
@@ -416,69 +703,67 @@ with tab1:
             key=lambda x: x.get("score", 0),
             reverse=True
         )
-
         for i, lead in enumerate(leads_sorted):
             score = lead.get("score", 0)
             label = (
-                "🟢 HOT" if score >= 80
-                else "🟡 WARM" if score >= 60
-                else "🔴 COLD"
+                "Hot" if score >= 80
+                else "Warm" if score >= 60
+                else "Cold"
             )
             with st.expander(
-                lead.get("company","") + " — " +
-                str(score) + "/100 " + label,
+                lead.get("company","") +
+                "   |   Score: " + str(score) +
+                "/100   |   " + label,
                 expanded=(i == 0)
             ):
                 col_a, col_b = st.columns([3, 1])
                 with col_a:
                     st.markdown(
-                        "**Why they fit:** " +
-                        lead.get("why_fit","")
+                        "**Why they fit**"
                     )
-                    st.markdown(
-                        "**Buying signal:** " +
-                        lead.get("trigger","")
-                    )
-                    st.markdown(
-                        "**Best contact:** " +
-                        lead.get("best_contact","")
-                    )
+                    st.write(lead.get("why_fit",""))
+                    st.markdown("**Buying signal**")
+                    st.write(lead.get("trigger",""))
+                    st.markdown("**Best contact**")
+                    st.write(lead.get("best_contact",""))
                     st.caption(
                         lead.get("location","") +
-                        " · " + lead.get("size","")
+                        "   ·   " + lead.get("size","")
                     )
                 with col_b:
                     st.metric(
                         "Fit Score",
                         str(score) + "/100"
                     )
-
+                st.markdown("---")
                 if st.button(
-                    "Research this company →",
+                    "Research this company",
                     key="disc_" + str(i)
                 ):
                     st.session_state["prefill"] = (
                         lead.get("company","")
                     )
                     st.info(
-                        "Go to Company Research tab "
-                        "for " + lead.get("company","")
+                        "Go to Company Research tab — "
+                        + lead.get("company","") +
+                        " is prefilled"
                     )
 
 # ════════════════════════════════════════════════
 # TAB 2 — COMPANY RESEARCH
 # ════════════════════════════════════════════════
 with tab2:
-    st.markdown("## Company Research Pipeline")
+    st.markdown("## Company Research")
     st.markdown(
-        "Full AI pipeline: "
-        "Research → Pitch Angle → Outreach Messages"
+        "Full pipeline — Research, Pitch Angle, "
+        "and Outreach Messages in one click."
     )
+    st.markdown("---")
 
     col1, col2 = st.columns(2)
     with col1:
         company_input = st.text_input(
-            "Company Name *",
+            "Company Name",
             value=st.session_state.get("prefill",""),
             placeholder="e.g. Gymshark"
         )
@@ -497,13 +782,15 @@ with tab2:
                 "e.g. be more direct, "
                 "lead with ROI, shorter messages..."
             ),
-            height=100
+            height=104
         )
 
+    st.markdown("---")
     col_x, col_y = st.columns(2)
     with col_x:
         run_pipeline = st.button(
-            "Run Full Pipeline", type="primary"
+            "Run Full Pipeline",
+            type="primary"
         )
     with col_y:
         research_only = st.button("Research Only")
@@ -523,46 +810,49 @@ with tab2:
                     title_input
                 )
 
-            if "error" not in intel:
+            if "error" not in intel and intel:
                 score = intel.get("score", 0)
+                st.markdown("---")
+                st.markdown("### Intelligence Report")
+
                 m1, m2, m3 = st.columns(3)
                 m1.metric(
                     "Industry",
                     intel.get("industry","—")
                 )
                 m2.metric(
-                    "Size",
+                    "Company Size",
                     intel.get("size","—")
                 )
                 m3.metric(
-                    "Fit Score",
-                    str(score) + "/100"
+                    "Salesforce Fit",
+                    str(score) + " / 100"
                 )
 
-                st.markdown(
-                    "**Overview:** " +
-                    intel.get("overview","")
-                )
+                st.markdown("---")
+                st.markdown("**Overview**")
+                st.write(intel.get("overview",""))
 
                 col_p, col_t = st.columns(2)
                 with col_p:
+                    st.markdown("**Pain Points**")
                     if intel.get("pain_points"):
-                        st.markdown("**🔴 Pain Points:**")
                         for p in intel["pain_points"]:
-                            st.markdown("- " + p)
+                            st.markdown("— " + p)
                 with col_t:
+                    st.markdown("**Recent Triggers**")
                     if intel.get("recent_triggers"):
-                        st.markdown("**🟢 Recent Triggers:**")
                         for t in intel["recent_triggers"]:
-                            st.markdown("- " + t)
+                            st.markdown("— " + t)
 
+                st.markdown("---")
                 st.info(
-                    "🎯 Best Contact: " +
-                    intel.get("best_contact_title","")
+                    "Best Contact:   " +
+                    intel.get("best_contact_title","—")
                 )
                 st.success(
-                    "💡 Pitch Angle: " +
-                    intel.get("pitch_angle","")
+                    "Pitch Angle:   " +
+                    intel.get("pitch_angle","—")
                 )
 
                 if run_pipeline:
@@ -576,7 +866,7 @@ with tab2:
                             intel, feedback_input
                         )
 
-                    if "error" not in messages:
+                    if "error" not in messages and messages:
                         mt1, mt2, mt3, mt4 = st.tabs([
                             "LinkedIn DM",
                             "Cold Email",
@@ -585,16 +875,18 @@ with tab2:
                         ])
                         with mt1:
                             st.text_area(
-                                "LinkedIn DM — copy and paste",
+                                "Copy and paste into LinkedIn",
                                 messages.get("linkedin_dm",""),
                                 height=200,
                                 key="li_msg"
                             )
                         with mt2:
                             st.markdown(
-                                "**Subject Line:** `" +
-                                messages.get("subject_line","") +
-                                "`"
+                                "**Subject Line**"
+                            )
+                            st.code(
+                                messages.get("subject_line",""),
+                                language=None
                             )
                             st.text_area(
                                 "Email Body",
@@ -604,14 +896,14 @@ with tab2:
                             )
                         with mt3:
                             st.text_area(
-                                "Follow-up Message",
+                                "Send if no reply after 5 days",
                                 messages.get("followup",""),
                                 height=150,
                                 key="fu_msg"
                             )
                         with mt4:
                             st.text_area(
-                                "Connection Note",
+                                "Use when sending connection request",
                                 messages.get("connection_note",""),
                                 height=100,
                                 key="cn_msg"
@@ -619,7 +911,7 @@ with tab2:
 
                         st.markdown("---")
                         if st.button(
-                            "💾 Save Lead + Messages",
+                            "Save Lead and Messages",
                             type="primary"
                         ):
                             save_lead(intel)
@@ -627,8 +919,8 @@ with tab2:
                                 company_input, messages
                             )
                             st.success(
-                                "✅ " + company_input +
-                                " saved to database!"
+                                company_input +
+                                " saved to your database"
                             )
                     else:
                         st.error(
@@ -647,15 +939,16 @@ with tab2:
 with tab3:
     st.markdown("## LinkedIn Workflow")
     st.markdown(
-        "One-click workflow to contact each lead."
+        "Your step-by-step workflow for contacting each lead."
     )
+    st.markdown("---")
 
     all_leads = get_all_leads()
 
     if not all_leads:
         st.info(
-            "No leads yet. Run Lead Discovery or "
-            "Company Research first then save leads."
+            "No leads saved yet. Research a company "
+            "and save it to see it here."
         )
     else:
         for lead in all_leads:
@@ -666,85 +959,83 @@ with tab3:
             conn_note = lead[19] if len(lead) > 19 else ""
             li_dm     = lead[15] if len(lead) > 15 else ""
 
-            status_icon = (
-                "🟢" if status == "replied"
-                else "🟡" if status == "contacted"
-                else "⚪"
+            status_label = (
+                "Replied" if status == "replied"
+                else "Contacted" if status == "contacted"
+                else "New"
             )
 
             with st.expander(
-                status_icon + " " + comp +
-                " — " + str(score) + "/100 — " + status
+                comp + "   |   " + str(score) +
+                "/100   |   " + status_label
             ):
                 search_url = (
                     "https://www.linkedin.com/"
                     "search/results/people/?keywords=" +
-                    (target + " " + comp).replace(
-                        " ", "%20"
-                    )
+                    (target + " " + comp).replace(" ","%20")
                 )
 
+                st.markdown("**Target Role**")
+                st.write(target)
+
+                st.markdown("**Step 1 — Find them on LinkedIn**")
                 st.markdown(
-                    "**Target Role:** " + target
-                )
-                st.markdown(
-                    "**[🔗 Find on LinkedIn](" +
-                    search_url + ")**"
-                )
-                st.caption(
-                    "Click link → find the person → "
-                    "send connection note below"
+                    "[Search LinkedIn for " + target +
+                    " at " + comp + "](" + search_url + ")"
                 )
 
                 if conn_note:
-                    st.markdown("**Connection Note:**")
+                    st.markdown("---")
+                    st.markdown(
+                        "**Step 2 — Send connection request**"
+                    )
                     st.text_area(
-                        "Copy for connection request",
+                        "Copy this note",
                         conn_note,
                         height=80,
                         key="cn_li_" + str(lead[0])
                     )
+
                 if li_dm:
+                    st.markdown("---")
                     st.markdown(
-                        "**LinkedIn DM** "
-                        "(send after they accept):"
+                        "**Step 3 — Send DM after connecting**"
                     )
                     st.text_area(
-                        "Copy this DM",
+                        "Copy this message",
                         li_dm,
                         height=150,
                         key="dm_li_" + str(lead[0])
                     )
+
                 if not conn_note and not li_dm:
                     st.info(
                         "Run Full Pipeline in Company "
-                        "Research tab to generate messages."
+                        "Research to generate messages."
                     )
 
-                col_s1, col_s2, col_s3 = st.columns(3)
-                with col_s1:
+                st.markdown("---")
+                s1, s2, s3 = st.columns(3)
+                with s1:
                     if st.button(
-                        "✅ Mark Contacted",
+                        "Mark as Contacted",
                         key="c_" + str(lead[0])
                     ):
                         update_status(comp, "contacted")
-                        st.success("Updated!")
                         st.rerun()
-                with col_s2:
+                with s2:
                     if st.button(
-                        "💬 Mark Replied",
+                        "Mark as Replied",
                         key="r_" + str(lead[0])
                     ):
                         update_status(comp, "replied")
-                        st.success("Updated!")
                         st.rerun()
-                with col_s3:
+                with s3:
                     if st.button(
-                        "🏁 Mark Closed",
+                        "Mark as Closed",
                         key="cl_" + str(lead[0])
                     ):
                         update_status(comp, "closed")
-                        st.success("Updated!")
                         st.rerun()
 
 # ════════════════════════════════════════════════
@@ -752,19 +1043,23 @@ with tab3:
 # ════════════════════════════════════════════════
 with tab4:
     st.markdown("## Lead Database")
+    st.markdown(
+        "All your saved leads with status tracking."
+    )
+    st.markdown("---")
 
     all_leads_db = get_all_leads()
 
     if not all_leads_db:
         st.info(
             "No leads saved yet. Research companies "
-            "and save them to see them here."
+            "and save them to build your database."
         )
     else:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Leads", len(all_leads_db))
         m2.metric(
-            "Hot 80+",
+            "Hot Leads",
             len([
                 l for l in all_leads_db
                 if (l[7] or 0) >= 80
@@ -787,17 +1082,19 @@ with tab4:
 
         st.markdown("---")
 
-        status_filter = st.selectbox(
-            "Filter by status",
-            [
-                "All", "new", "ready_to_contact",
-                "contacted", "replied", "closed"
-            ]
-        )
-
-        min_score = st.slider(
-            "Minimum score", 0, 100, 0
-        )
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            status_filter = st.selectbox(
+                "Filter by Status",
+                [
+                    "All", "new", "ready_to_contact",
+                    "contacted", "replied", "closed"
+                ]
+            )
+        with fc2:
+            min_score = st.slider(
+                "Minimum Score", 0, 100, 0
+            )
 
         filtered = [
             l for l in all_leads_db
@@ -809,56 +1106,46 @@ with tab4:
         st.caption(
             "Showing " + str(len(filtered)) + " leads"
         )
+        st.markdown("---")
 
         for lead in filtered:
             score = lead[7] or 0
-            icon = (
-                "🟢" if score >= 80
-                else "🟡" if score >= 60
-                else "🔴"
+            label = (
+                "Hot" if score >= 80
+                else "Warm" if score >= 60
+                else "Cold"
             )
             with st.expander(
-                icon + " " + lead[1] +
-                " | " + str(score) + "/100 | " +
-                (lead[13] or "new")
+                lead[1] + "   |   " +
+                str(score) + "/100   |   " +
+                (lead[13] or "new").capitalize()
             ):
                 d1, d2 = st.columns(2)
                 with d1:
-                    st.markdown(
-                        "**Industry:** " +
-                        (lead[2] or "—")
-                    )
-                    st.markdown(
-                        "**Size:** " + (lead[3] or "—")
-                    )
-                    st.markdown(
-                        "**HQ:** " + (lead[4] or "—")
-                    )
-                    st.markdown(
-                        "**Best Contact:** " +
-                        (lead[11] or "—")
-                    )
+                    st.markdown("**Industry**")
+                    st.write(lead[2] or "—")
+                    st.markdown("**Company Size**")
+                    st.write(lead[3] or "—")
+                    st.markdown("**HQ**")
+                    st.write(lead[4] or "—")
+                    st.markdown("**Best Contact**")
+                    st.write(lead[11] or "—")
                 with d2:
-                    st.markdown(
-                        "**Score:** " +
-                        str(score) + "/100"
-                    )
-                    st.markdown(
-                        "**Added:** " +
-                        (lead[14] or "—")
-                    )
-                    st.markdown(
-                        "**Pitch:** " +
-                        (lead[12] or "—")
-                    )
+                    st.markdown("**Fit Score**")
+                    st.write(str(score) + " / 100")
+                    st.markdown("**Added**")
+                    st.write(lead[14] or "—")
+                    st.markdown("**Pitch Angle**")
+                    st.write(lead[12] or "—")
 
                 if lead[8]:
-                    st.markdown(
-                        "**Overview:** " + lead[8]
-                    )
+                    st.markdown("---")
+                    st.markdown("**Overview**")
+                    st.write(lead[8])
 
+                st.markdown("---")
                 new_status = st.selectbox(
-                    "Update status",
+                    "Update Status",
                     [
                         "new", "ready_to_contact",
                         "contacted", "replied", "closed"
@@ -869,8 +1156,7 @@ with tab4:
                     ].index(lead[13] or "new"),
                     key="status_" + str(lead[0])
                 )
-
                 if new_status != (lead[13] or "new"):
                     update_status(lead[1], new_status)
-                    st.success("Status updated!")
+                    st.success("Status updated")
                     st.rerun()
