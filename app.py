@@ -868,6 +868,7 @@ with tab2:
                             save_lead(intel)
                             save_messages(company_input, messages)
                             st.success(company_input + " saved to your database")
+                            st.rerun()
                     else:
                         st.error("Message error: " + str(messages.get("error","")))
             else:
