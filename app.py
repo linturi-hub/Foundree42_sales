@@ -4,6 +4,7 @@ import json
 import re
 import requests
 from datetime import datetime
+from urllib.parse import quote_plus
 
 st.set_page_config(
     page_title="Foundree42 | Lead Intelligence",
@@ -219,38 +220,34 @@ SYSTEM_PROMPT = (
     "ICP6: Companies needing trusted senior Salesforce delivery to reduce project risk. "
     "Target buyer roles: Salesforce Platform Owner, VP RevOps, COO, CIO, IT Director, "
     "Enterprise Architect, PMO Leader, Salesforce Admin Lead, Head of CRM, VP Sales. "
+    "ACCURACY RULES: Never invent specific employee names. If you are not highly confident a "
+    "person is currently at this company in this role, leave name fields empty and return only "
+    "the role title. Only include facts you have grounded knowledge of. Mark uncertainty honestly. "
     "Always return valid JSON only. No markdown fences. No explanation. No preamble."
 )
 
-SCORING_GUIDE = (
-    " Score the company 0-100 for Salesforce consultancy fit: "
-    "90-100 = perfect fit, clear Salesforce need, right size and signals. "
-    "75-89 = strong fit, good buying signals, likely to need help. "
-    "60-74 = moderate fit, some signals but less certain. "
-    "40-59 = weak fit, possible but unlikely. "
-    "Below 40 = poor fit, do not recommend outreach. "
-    "Return a realistic integer score based on actual analysis."
-)
-
-def ask_ai(prompt, system_override=None):
+def ask_ai(prompt, system_override=None, json_mode=False, temperature=0.3, max_tokens=2500):
     if not st.session_state.get("api_key"):
         return "ERROR: No API key. Please paste your Groq key in the sidebar."
     try:
         client = groq.Groq(api_key=st.session_state["api_key"])
-        resp   = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
+        kwargs = {
+            "model"       : "llama-3.3-70b-versatile",
+            "messages"    : [
                 {"role": "system", "content": system_override or SYSTEM_PROMPT},
                 {"role": "user",   "content": prompt}
             ],
-            temperature=0.5,
-            max_tokens=2500
-        )
+            "temperature" : temperature,
+            "max_tokens"  : max_tokens,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content
     except Exception as e:
         return "ERROR: " + str(e)
 
-def ask_ai_chat(messages_history):
+def ask_ai_chat(messages_history, temperature=0.5):
     """For the message refinement chatbot — maintains full conversation."""
     if not st.session_state.get("api_key"):
         return "ERROR: No API key set."
@@ -259,34 +256,36 @@ def ask_ai_chat(messages_history):
         resp   = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages_history,
-            temperature=0.6,
-            max_tokens=1000
+            temperature=temperature,
+            max_tokens=1200
         )
         return resp.choices[0].message.content
     except Exception as e:
         return "ERROR: " + str(e)
 
 def parse_json(raw):
+    if not isinstance(raw, str):
+        return {}
     clean = re.sub(r"```json|```", "", raw).strip()
     try:
         return json.loads(clean)
-    except:
+    except Exception:
         pass
     match = re.search(r"\{.*\}", clean, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
-        except:
+        except Exception:
             pass
     match = re.search(r"\[.*\]", clean, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
-        except:
+        except Exception:
             pass
     return {}
 
-# ── FREE ACCURACY BOOSTS ──────────────────────────
+# ── GROUNDING SIGNALS ─────────────────────────────
 def get_live_news(company):
     try:
         url    = "https://news.google.com/rss/search"
@@ -297,10 +296,10 @@ def get_live_news(company):
             "ceid": "US:en"
         }
         resp  = requests.get(url, params=params, timeout=6)
-        items = re.findall(r"<title>(.*?)</title>", resp.text)[1:5]
+        items = re.findall(r"<title>(.*?)</title>", resp.text)[1:6]
         clean = [re.sub(r"<.*?>|&amp;|&quot;|&#39;|&lt;|&gt;", "", i).strip() for i in items]
         return [c for c in clean if len(c) > 15]
-    except:
+    except Exception:
         return []
 
 def get_hiring_signal(company):
@@ -310,60 +309,245 @@ def get_hiring_signal(company):
         resp   = requests.get(url, params=params, timeout=5)
         items  = re.findall(r"<title>(.*?)</title>", resp.text)[1:3]
         return len(items) > 0
-    except:
+    except Exception:
         return False
+
+def get_funding_signal(company):
+    try:
+        url    = "https://news.google.com/rss/search"
+        params = {"q": '"' + company + '" funding OR Series OR acquired OR IPO', "hl": "en-US"}
+        resp   = requests.get(url, params=params, timeout=5)
+        items  = re.findall(r"<title>(.*?)</title>", resp.text)[1:3]
+        return len(items) > 0
+    except Exception:
+        return False
+
+def get_company_homepage_blurb(company):
+    """Best-effort fetch of the company's homepage to ground the LLM in current text."""
+    try:
+        slug = re.sub(r"[^a-z0-9]", "", company.lower())
+        if not slug:
+            return ""
+        candidates = [
+            "https://www." + slug + ".com",
+            "https://" + slug + ".com",
+            "https://www." + slug + ".io",
+        ]
+        for url in candidates:
+            try:
+                resp = requests.get(
+                    url,
+                    timeout=4,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; Foundree42Bot/1.0)"}
+                )
+                if resp.status_code == 200 and len(resp.text) > 200:
+                    html  = resp.text
+                    parts = []
+                    title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+                    if title_m:
+                        parts.append("Title: " + title_m.group(1).strip()[:200])
+                    desc_m = re.search(
+                        r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)',
+                        html, re.IGNORECASE
+                    )
+                    if desc_m:
+                        parts.append("Description: " + desc_m.group(1).strip()[:400])
+                    og_m = re.search(
+                        r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)',
+                        html, re.IGNORECASE
+                    )
+                    if og_m and not desc_m:
+                        parts.append("OG: " + og_m.group(1).strip()[:400])
+                    if parts:
+                        return " | ".join(parts)
+            except Exception:
+                continue
+        return ""
+    except Exception:
+        return ""
+
+# ── DETERMINISTIC SCORING ─────────────────────────
+def linkedin_profile_search_url(query):
+    """Google search scoped to LinkedIn profiles - far more accurate than LinkedIn's own search."""
+    if not query:
+        return ""
+    return "https://www.google.com/search?q=" + quote_plus("site:linkedin.com/in/ " + query)
+
+def compute_fit_score(features):
+    """
+    Deterministic 0-100 fit score from extracted features.
+    Same features -> same score, every time. No LLM randomness.
+    Weights are tuned for Foundree42's 6 ICPs.
+    """
+    score = 0
+    reasons = []
+
+    # Revenue band fit (max 25)
+    rb = (features.get("revenue_band") or "").lower()
+    if any(k in rb for k in ["3b", "10b", "1b+"]):
+        score += 25; reasons.append("Enterprise revenue (ICP1/2 fit)")
+    elif "1b" in rb or "billion" in rb:
+        score += 24; reasons.append("$1B+ revenue (ICP1 fit)")
+    elif "500m" in rb or "500m-3b" in rb:
+        score += 22; reasons.append("$500M-3B revenue (ICP2 fit)")
+    elif "50m" in rb or "100m" in rb or "200m" in rb or "50-500m" in rb:
+        score += 18; reasons.append("Mid-market revenue (ICP3 fit)")
+    elif "10m" in rb or "10-50m" in rb:
+        score += 8;  reasons.append("Sub-mid-market revenue")
+    elif "<10m" in rb or "under" in rb:
+        score += 3;  reasons.append("SMB revenue (below ICP)")
+    else:
+        score += 10; reasons.append("Revenue unknown")
+
+    # ICP match (max 22)
+    icp = features.get("icp_match_number")
+    try:
+        icp_num = int(icp) if icp is not None else 0
+    except (TypeError, ValueError):
+        icp_num = 0
+    if 1 <= icp_num <= 6:
+        score += 22; reasons.append("Maps to ICP" + str(icp_num))
+    else:
+        score += 6;  reasons.append("No clear ICP match")
+
+    # Salesforce status (max 20)
+    sf = (features.get("salesforce_status") or "").lower()
+    if "uses_salesforce" in sf or "uses salesforce" in sf or "current" in sf or "implementing" in sf:
+        score += 20; reasons.append("Active Salesforce user")
+    elif "evaluating" in sf or "considering" in sf or "replacing" in sf:
+        score += 17; reasons.append("Salesforce in motion")
+    elif "no_salesforce" in sf or "no salesforce" in sf or "none" in sf:
+        score += 4;  reasons.append("No Salesforce footprint")
+    else:
+        score += 9;  reasons.append("Salesforce status unknown")
+
+    # Hiring signal (max 10)
+    if features.get("hiring_signal"):
+        score += 10; reasons.append("Hiring CRM/RevOps roles")
+
+    # Funding / growth (max 10)
+    if features.get("funding_signal"):
+        score += 10; reasons.append("Recent funding or M&A")
+    elif features.get("growth_signal"):
+        score += 6;  reasons.append("Growth signals")
+
+    # Org complexity (max 13) — multi-cloud, M&A debt, fragmented stack favor Foundree42
+    cx = (features.get("complexity") or "").lower()
+    if "high" in cx:
+        score += 13; reasons.append("High org complexity")
+    elif "medium" in cx or "moderate" in cx or "med" in cx:
+        score += 8;  reasons.append("Moderate org complexity")
+    elif "low" in cx:
+        score += 2;  reasons.append("Low org complexity")
+    else:
+        score += 5
+
+    score = min(100, max(0, score))
+    return score, reasons
+
+def score_label(score):
+    if score >= 80: return "Hot"
+    if score >= 60: return "Warm"
+    return "Cold"
 
 # ── RESEARCH ──────────────────────────────────────
 def research_company(company, contact="", title=""):
-    news    = get_live_news(company)
-    hiring  = get_hiring_signal(company)
+    news      = get_live_news(company)
+    hiring    = get_hiring_signal(company)
+    funding   = get_funding_signal(company)
+    homepage  = get_company_homepage_blurb(company)
 
-    news_ctx = ""
+    grounding = ""
+    if homepage:
+        grounding += "\nHOMEPAGE EXCERPT (current): " + homepage[:700]
     if news:
-        news_ctx += " Live news headlines about this company: " + " | ".join(news[:3]) + "."
+        grounding += "\nRECENT NEWS (last 30 days): " + " | ".join(news[:4])
     if hiring:
-        news_ctx += " Hiring signal detected: they appear to be actively hiring Salesforce or CRM roles right now."
+        grounding += "\nHIRING SIGNAL: actively posting Salesforce/CRM/RevOps roles."
+    if funding:
+        grounding += "\nFUNDING/M&A SIGNAL: recent funding or acquisition activity detected."
+
+    contact_ctx = ""
+    if contact:
+        contact_ctx = " Known contact: " + contact + (" (" + title + ")" if title else "") + "."
 
     prompt = (
         "Research the US company: " + company + "."
-        + (" Contact: " + contact + ", " + title + "." if contact else "")
-        + news_ctx
-        + " Use all available knowledge. Be specific and accurate."
-        + " Identify the Foundree42 ICP that best fits this company."
-        + " Identify 3 real people or ideal roles at this company to contact."
-        + SCORING_GUIDE
-        + " Return ONLY this JSON object, no other text:"
-        + "{"
-        + '"company":"' + company + '",'
-        + '"overview":"accurate 2-3 sentence summary of what they do and their scale",'
-        + '"industry":"specific industry vertical",'
-        + '"size":"employee count range and revenue range",'
-        + '"hq":"city and state",'
-        + '"ceo":"current CEO or President full name",'
-        + '"current_crm":"their known CRM or Salesforce usage status",'
-        + '"score":75,'
-        + '"icp_match":"ICP number (1-6) and one specific sentence explaining why",'
-        + '"pain_points":["very specific operational pain point 1","pain point 2","pain point 3"],'
-        + '"recent_triggers":["specific recent signal or news 1","signal 2","signal 3"],'
-        + '"ideal_contacts":['
-        + '{"name":"real name or likely role title if unknown","title":"exact US job title","why":"specific one sentence reason they are the right contact","linkedin_search":"first name last name company search query"},'
-        + '{"name":"second contact name or role","title":"exact title","why":"why they matter","linkedin_search":"search query"},'
-        + '{"name":"third contact name or role","title":"exact title","why":"why they matter","linkedin_search":"search query"}'
-        + '],'
-        + '"best_contact_title":"single best job title to target",'
-        + '"pitch_angle":"one very specific sentence pitch referencing their actual situation and a real detail about them",'
-        + '"cta":"one of: Reset Assessment / Governance Workshop / Managed Services Quote / Automation Audit / Delivery Model Review / Talk to Senior Architect"'
-        + "}"
+        + contact_ctx
+        + grounding
+        + "\n\nCRITICAL ACCURACY RULES:"
+        + "\n- DO NOT invent or guess employee names. If you cannot name a real current employee with high confidence, leave 'name' as empty string and return only the role title."
+        + "\n- For revenue and headcount, use the bands provided. If unsure, choose the broader band."
+        + "\n- For salesforce_status, only say 'uses_salesforce' if you have grounded evidence (job postings, news, homepage)."
+        + "\n- Pain points and triggers must reference the homepage excerpt or news above when possible."
+        + "\n- If the homepage or news is empty and you have low confidence, set salesforce_status to 'unknown' and complexity to 'unknown'."
+        + "\n\nReturn ONLY this JSON object:"
+        + "\n{"
+        + '\n  "company": "' + company + '",'
+        + '\n  "overview": "2-3 sentence accurate summary grounded in the homepage excerpt or news above",'
+        + '\n  "industry": "specific industry vertical",'
+        + '\n  "size": "headcount range and revenue range",'
+        + '\n  "revenue_band": "one of: <10M | 10-50M | 50-500M | 500M-3B | 1B+ | 3B+ | unknown",'
+        + '\n  "headcount_band": "one of: <50 | 50-200 | 200-500 | 500-2000 | 2000-10000 | 10000+ | unknown",'
+        + '\n  "hq": "city, state",'
+        + '\n  "ceo": "current CEO full name only if you are highly confident, else empty string",'
+        + '\n  "current_crm": "their CRM stack and Salesforce usage details if known, else empty",'
+        + '\n  "salesforce_status": "one of: uses_salesforce | evaluating | considering_replacement | no_salesforce | unknown",'
+        + '\n  "icp_match_number": 0,'
+        + '\n  "icp_match": "ICP X — one specific sentence why they match",'
+        + '\n  "complexity": "one of: high | medium | low | unknown",'
+        + '\n  "hiring_signal": false,'
+        + '\n  "funding_signal": false,'
+        + '\n  "growth_signal": false,'
+        + '\n  "pain_points": ["specific pain 1", "specific pain 2", "specific pain 3"],'
+        + '\n  "recent_triggers": ["specific signal 1", "signal 2", "signal 3"],'
+        + '\n  "ideal_contacts": ['
+        + '\n    {"name": "real current employee name ONLY if high confidence else empty", "title": "exact US job title", "why": "one specific reason this role matters", "search_query": "Job Title at Company Name"},'
+        + '\n    {"name": "", "title": "second target role", "why": "why they matter", "search_query": "..."},'
+        + '\n    {"name": "", "title": "third target role", "why": "why they matter", "search_query": "..."}'
+        + '\n  ],'
+        + '\n  "best_contact_title": "single best target job title",'
+        + '\n  "pitch_angle": "one specific sentence pitch referencing a real detail from the grounding above",'
+        + '\n  "cta": "one of: Reset Assessment | Governance Workshop | Managed Services Quote | Automation Audit | Delivery Model Review | Talk to Senior Architect"'
+        + "\n}"
     )
-    raw    = ask_ai(prompt)
-    if raw.startswith("ERROR"):
+
+    raw = ask_ai(prompt, json_mode=True, temperature=0.0, max_tokens=2500)
+    if isinstance(raw, str) and raw.startswith("ERROR"):
         return {"error": raw}
     result = parse_json(raw)
+    if not isinstance(result, dict) or not result:
+        return {"error": "Could not parse research response."}
 
-    # Inject live news into triggers
-    if news and isinstance(result, dict):
-        existing = result.get("recent_triggers",[])
-        result["recent_triggers"] = (news[:2] + [t for t in existing if t not in news])[:4]
+    # Override model-claimed signals with our live detection (live wins)
+    result["hiring_signal"] = bool(hiring or result.get("hiring_signal", False))
+    result["funding_signal"] = bool(funding or result.get("funding_signal", False))
+
+    # Inject live news as triggers (live wins)
+    if news:
+        existing = result.get("recent_triggers", []) or []
+        merged = news[:2] + [t for t in existing if t and t not in news]
+        result["recent_triggers"] = merged[:4]
+
+    # Compute deterministic score from features (replaces LLM-decided score)
+    score, reasons = compute_fit_score(result)
+    result["score"] = score
+    result["score_breakdown"] = reasons
+
+    # Build accurate Google-scoped LinkedIn URLs for each contact
+    contacts = result.get("ideal_contacts", []) or []
+    for c in contacts:
+        # Prefer name-based search if name is real, else title + company
+        name = (c.get("name") or "").strip()
+        title_str = (c.get("title") or "").strip()
+        if name and name.lower() not in ["unknown", "n/a", "none", "not found", ""]:
+            q = name + " " + company
+        else:
+            q = title_str + " " + company
+            c["name"] = ""  # blank rather than fake
+        c["search_query"] = q
+        c["linkedin_url"] = linkedin_profile_search_url(q)
+    result["ideal_contacts"] = contacts
 
     return result
 
@@ -373,88 +557,129 @@ def discover_leads(industry, location, revenue, size, signals, count):
         "Find " + str(count) + " real US companies that are strong Salesforce "
         "consultancy prospects for Foundree42. "
         "Search criteria: Industry=" + industry
-        + " Location=" + location
-        + " Revenue=" + revenue
-        + " Size=" + size
-        + " Buying signals=" + signals + ". "
-        + SCORING_GUIDE
-        + " Focus on companies that: use Salesforce or need it, "
-        "are growing their sales teams, raised recent funding, "
-        "or show signs of CRM investment or complexity. "
-        "Return ONLY a JSON array, no other text:"
-        + "[{"
-        + '"company":"exact real US company name",'
-        + '"industry":"specific industry vertical",'
-        + '"size":"employee count estimate",'
-        + '"location":"city, state",'
-        + '"revenue":"revenue estimate",'
-        + '"why_fit":"specific ICP match reason referencing a real detail",'
-        + '"trigger":"specific buying signal for this company",'
-        + '"best_contact":"ideal US job title to target",'
-        + '"score":75'
-        + "}]"
-        + " Real verified US companies only. Each score must be independently calculated."
+        + " | Location=" + location
+        + " | Revenue=" + revenue
+        + " | Size=" + size
+        + " | Buying signals=" + signals + ". "
+        + "\n\nACCURACY RULES:"
+        + "\n- Only return REAL US companies you have grounded knowledge of. Do not invent."
+        + "\n- For each, return STRUCTURED FEATURES — do not return a holistic score. The app computes the score deterministically."
+        + "\n- If you cannot find " + str(count) + " strong matches, return fewer rather than padding with weak ones."
+        + "\n\nReturn ONLY a JSON object with key 'leads' containing an array:"
+        + '\n{"leads": [{'
+        + '\n  "company": "exact real US company name",'
+        + '\n  "industry": "specific industry vertical",'
+        + '\n  "headcount_band": "one of: <50 | 50-200 | 200-500 | 500-2000 | 2000-10000 | 10000+ | unknown",'
+        + '\n  "revenue_band": "one of: <10M | 10-50M | 50-500M | 500M-3B | 1B+ | 3B+ | unknown",'
+        + '\n  "location": "city, state",'
+        + '\n  "salesforce_status": "uses_salesforce | evaluating | considering_replacement | no_salesforce | unknown",'
+        + '\n  "icp_match_number": 0,'
+        + '\n  "why_fit": "specific ICP match reason referencing a real detail",'
+        + '\n  "trigger": "specific buying signal",'
+        + '\n  "best_contact": "ideal US job title to target",'
+        + '\n  "complexity": "high | medium | low | unknown",'
+        + '\n  "hiring_signal": false,'
+        + '\n  "funding_signal": false,'
+        + '\n  "growth_signal": false'
+        + "\n}]}"
     )
-    raw    = ask_ai(prompt)
-    if raw.startswith("ERROR"):
+    raw = ask_ai(prompt, json_mode=True, temperature=0.0, max_tokens=2500)
+    if isinstance(raw, str) and raw.startswith("ERROR"):
         st.error(raw)
         return []
     result = parse_json(raw)
+    leads = []
     if isinstance(result, list):
-        return result
-    if isinstance(result, dict):
-        for v in result.values():
-            if isinstance(v, list):
-                return v
-    return []
+        leads = result
+    elif isinstance(result, dict):
+        if "leads" in result and isinstance(result["leads"], list):
+            leads = result["leads"]
+        else:
+            for v in result.values():
+                if isinstance(v, list):
+                    leads = v
+                    break
+
+    # Compute deterministic score per lead, normalize fields
+    scored = []
+    for lead in leads:
+        if not isinstance(lead, dict):
+            continue
+        score, reasons = compute_fit_score(lead)
+        lead["score"] = score
+        lead["score_breakdown"] = reasons
+        # Friendly aliases for display
+        if not lead.get("size"):
+            lead["size"] = lead.get("headcount_band", "unknown")
+        if not lead.get("revenue"):
+            lead["revenue"] = lead.get("revenue_band", "unknown")
+        scored.append(lead)
+    return scored
 
 # ── GENERATE MESSAGES ─────────────────────────────
+GOOD_MESSAGE_EXAMPLE = (
+    'Example of a strong Foundree42 LinkedIn DM:\n'
+    '"Hi Sarah — saw the Acme + BrightCo announcement last month and your team is now '
+    'integrating two Salesforce orgs. We have led 14 post-merger Salesforce consolidations '
+    'in the last two years; the pattern we keep seeing is 6-8 weeks of governance work '
+    'before any rebuild starts, otherwise the same data debt resurfaces six months later. '
+    'Worth a 20-minute call to compare notes on where Acme is in that arc? '
+    '— The Foundree42 Team"\n\n'
+    'Why this works: opens with a real, recent fact about their company; states a specific '
+    'number from our experience; offers a concrete observation, not a pitch; ends with a '
+    'low-friction CTA tied to their situation.'
+)
+
 def generate_messages(lead_data, contact_name="", feedback=""):
-    contacts = lead_data.get("ideal_contacts",[])
-    contact_name = contact_name or (contacts[0].get("name","") if contacts else "")
-    first_name   = ""
-    if contact_name and contact_name.lower() not in ["unknown","not found","n/a",""]:
+    contacts = lead_data.get("ideal_contacts", []) or []
+    contact_name = contact_name or (contacts[0].get("name", "") if contacts else "")
+    first_name = ""
+    if contact_name and contact_name.lower() not in ["unknown", "not found", "n/a", ""]:
         parts      = contact_name.strip().split()
         first_name = parts[0] if parts else ""
 
-    greeting        = "Hi " + first_name if first_name else "Hi there"
-    contacts_ctx    = ""
+    greeting = "Hi " + first_name if first_name else "Hi there"
+
+    contact_role = ""
     if contacts:
         best = contacts[0]
-        contacts_ctx = " Primary contact: " + best.get("name","") + ", " + best.get("title","") + "."
+        contact_role = best.get("title", "") or ""
+
+    pain_str    = "; ".join([str(p) for p in (lead_data.get("pain_points") or [])])
+    trigger_str = "; ".join([str(t) for t in (lead_data.get("recent_triggers") or [])])
 
     prompt = (
-        "Write highly personalised Salesforce consultancy outreach "
-        "for the US company " + lead_data.get("company","") + "."
-        + contacts_ctx
-        + " Use this greeting: " + greeting + "."
-        + " ICP: " + (lead_data.get("icp_match") or "") + "."
-        + " Industry: " + (lead_data.get("industry") or "") + "."
-        + " Overview: " + (lead_data.get("overview") or "") + "."
-        + " Pain points: " + str(lead_data.get("pain_points") or []) + "."
-        + " Triggers: " + str(lead_data.get("recent_triggers") or []) + "."
-        + " Pitch: " + (lead_data.get("pitch_angle") or "") + "."
-        + " CTA: " + (lead_data.get("cta") or "") + "."
-        + (" Additional instructions: " + feedback + "." if feedback else "")
-        + " Rules: reference at least 2 specific real facts about this company."
-        " Never say I hope this finds you well."
-        " Never say I wanted to reach out."
-        " Never say I came across your profile."
-        " Sound like a senior consultant, not a salesperson."
-        " Be direct and confident."
-        " Sign off as The Foundree42 Team."
-        " End with the recommended CTA."
-        " Return ONLY this JSON, no other text:"
-        + "{"
-        + '"subject_line":"compelling subject line under 10 words, no generic phrases",'
-        + '"linkedin_dm":"LinkedIn DM 150-180 words, conversational, ends with soft CTA",'
-        + '"cold_email":"cold email 160-200 words, professional, ends with one direct question",'
-        + '"followup":"follow-up under 120 words, completely different angle from first message",'
-        + '"connection_note":"LinkedIn connection request under 60 words, warm and specific"'
-        + "}"
+        GOOD_MESSAGE_EXAMPLE
+        + "\n\nNow write Salesforce consultancy outreach for the US company: "
+        + lead_data.get("company", "") + "."
+        + "\nGreeting to use: " + greeting + "."
+        + "\nTarget role: " + (contact_role or lead_data.get("best_contact_title", "")) + "."
+        + "\nICP: " + (lead_data.get("icp_match") or "") + "."
+        + "\nIndustry: " + (lead_data.get("industry") or "") + "."
+        + "\nOverview: " + (lead_data.get("overview") or "") + "."
+        + "\nPain points: " + pain_str + "."
+        + "\nReal recent triggers: " + trigger_str + "."
+        + "\nPitch angle: " + (lead_data.get("pitch_angle") or "") + "."
+        + "\nCTA: " + (lead_data.get("cta") or "") + "."
+        + (("\nUser style instructions: " + feedback) if feedback else "")
+        + "\n\nMUST follow the GOOD example pattern above. Each message must:"
+        + "\n  1. Reference at least 2 specific real facts from the triggers/overview above."
+        + "\n  2. Include one concrete number, timeframe, or observation from senior consulting experience."
+        + "\n  3. End with a low-friction question or the recommended CTA — never both."
+        + "\n  4. Sound like a senior consultant comparing notes, not a salesperson pitching."
+        + "\n  5. Sign off as 'The Foundree42 Team'."
+        + "\nAvoid these openers entirely: 'I hope this finds you well', 'I wanted to reach out', 'I came across your profile'."
+        + "\n\nReturn ONLY this JSON object:"
+        + "\n{"
+        + '\n  "subject_line": "compelling subject under 10 words referencing a real fact",'
+        + '\n  "linkedin_dm": "150-180 words, conversational, ends with soft question",'
+        + '\n  "cold_email": "160-200 words, professional, ends with one direct question",'
+        + '\n  "followup": "under 120 words, completely different angle from the first message",'
+        + '\n  "connection_note": "under 60 words, warm and specific to their company"'
+        + "\n}"
     )
-    raw    = ask_ai(prompt)
-    if raw.startswith("ERROR"):
+    raw = ask_ai(prompt, json_mode=True, temperature=0.6, max_tokens=2000)
+    if isinstance(raw, str) and raw.startswith("ERROR"):
         return {"error": raw}
     return parse_json(raw)
 
@@ -469,26 +694,55 @@ def build_chat_system_prompt(intel, msg_type, current_msg):
     }
     label = msg_labels.get(msg_type, "outreach message")
     return (
-        "You are a senior sales writing consultant for Foundree42, "
-        "a US-based Salesforce consultancy. "
-        "You are helping refine a " + label + " for the company " +
-        intel.get("company","") + ". "
-        "Context about this company: "
-        "Industry: " + (intel.get("industry") or "") + ". "
-        "Size: " + (intel.get("size") or "") + ". "
-        "ICP: " + (intel.get("icp_match") or "") + ". "
-        "Pain points: " + str(intel.get("pain_points") or []) + ". "
-        "Triggers: " + str(intel.get("recent_triggers") or []) + ". "
-        "Pitch: " + (intel.get("pitch_angle") or "") + ". "
-        "CTA: " + (intel.get("cta") or "") + ". "
-        "The current " + label + " is: " + current_msg + ". "
-        "When the user asks you to rewrite or change the message, "
-        "return ONLY the new message text with no explanation, no labels, "
-        "no preamble. Just the message itself. "
-        "When the user asks questions or wants advice, answer conversationally. "
-        "Keep all messages referencing real facts about " + intel.get("company","") + ". "
-        "Never be generic. Always be specific to this company."
+        "You are a senior sales writing consultant for Foundree42, a US-based Salesforce consultancy. "
+        "You are helping refine a " + label + " for the US company " + intel.get("company", "") + ".\n\n"
+        "Company context:\n"
+        "- Industry: " + (intel.get("industry") or "") + "\n"
+        "- Size: " + (intel.get("size") or "") + "\n"
+        "- ICP: " + (intel.get("icp_match") or "") + "\n"
+        "- Pain points: " + "; ".join([str(p) for p in (intel.get("pain_points") or [])]) + "\n"
+        "- Triggers: " + "; ".join([str(t) for t in (intel.get("recent_triggers") or [])]) + "\n"
+        "- Pitch angle: " + (intel.get("pitch_angle") or "") + "\n"
+        "- CTA: " + (intel.get("cta") or "") + "\n\n"
+        "Current " + label + ":\n---\n" + current_msg + "\n---\n\n"
+        "RESPONSE FORMAT — return JSON ONLY:\n"
+        '{"intent": "rewrite" or "chat", "content": "..."}\n'
+        "- Use intent=\"rewrite\" when the user asks you to change, shorten, lengthen, rewrite, "
+        "or adjust the message. The 'content' field must contain ONLY the new message text "
+        "with no explanation, preamble, or labels.\n"
+        "- Use intent=\"chat\" when the user asks a question or wants advice. The 'content' "
+        "field contains your conversational reply.\n\n"
+        "All rewrites must keep referencing real facts about " + intel.get("company", "") + ". "
+        "Never produce generic copy."
     )
+
+def parse_chat_response(raw):
+    """Parses the chatbot JSON response. Returns (intent, content)."""
+    obj = parse_json(raw)
+    if isinstance(obj, dict) and "intent" in obj and "content" in obj:
+        intent = (obj.get("intent") or "chat").lower()
+        if intent not in ("rewrite", "chat"):
+            intent = "chat"
+        return intent, str(obj.get("content") or "").strip()
+    # Fallback: treat raw as chat reply
+    return "chat", (raw or "").strip()
+
+def ask_ai_chat_json(messages_history, temperature=0.5):
+    """Chat call with JSON mode forced."""
+    if not st.session_state.get("api_key"):
+        return "ERROR: No API key set."
+    try:
+        client = groq.Groq(api_key=st.session_state["api_key"])
+        resp   = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages_history,
+            temperature=temperature,
+            max_tokens=1200,
+            response_format={"type": "json_object"}
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return "ERROR: " + str(e)
 
 # ══════════════════════════════════════════════════
 # MAIN TABS
@@ -570,7 +824,7 @@ with tab1:
         )
         for i, lead in enumerate(leads_sorted):
             score = lead.get("score",0)
-            label = "Hot" if score >= 80 else "Warm" if score >= 60 else "Cold"
+            label = score_label(score)
             with st.expander(
                 lead.get("company","") + "   |   Score: " +
                 str(score) + "/100   |   " + label,
@@ -591,6 +845,11 @@ with tab1:
                     )
                 with col_b:
                     st.metric("Fit Score", str(score) + "/100")
+                breakdown = lead.get("score_breakdown") or []
+                if breakdown:
+                    with st.expander("How this score was computed", expanded=False):
+                        for r in breakdown:
+                            st.markdown("— " + str(r))
                 st.markdown("---")
                 if st.button("Research this company", key="disc_" + str(i)):
                     st.session_state["prefill"] = lead.get("company","")
@@ -655,6 +914,12 @@ with tab2:
                 if intel.get("cta"):
                     st.warning("Recommended CTA:   " + intel.get("cta",""))
 
+                breakdown = intel.get("score_breakdown") or []
+                if breakdown:
+                    with st.expander("Score breakdown (deterministic)", expanded=False):
+                        for r in breakdown:
+                            st.markdown("— " + str(r))
+
                 col_p, col_t = st.columns(2)
                 with col_p:
                     st.markdown("**Pain Points**")
@@ -671,26 +936,24 @@ with tab2:
                 contacts = intel.get("ideal_contacts",[])
                 if contacts:
                     for idx, contact in enumerate(contacts):
+                        title_disp = contact.get("title","") or "—"
+                        name_disp  = contact.get("name","") or "(role only — name not verified)"
                         with st.expander(
-                            "Contact " + str(idx+1) + " — " + contact.get("title",""),
+                            "Contact " + str(idx+1) + " — " + title_disp,
                             expanded=(idx == 0)
                         ):
                             cc1, cc2 = st.columns(2)
                             with cc1:
                                 st.markdown("**Name**")
-                                st.write(contact.get("name","—"))
+                                st.write(name_disp)
                                 st.markdown("**Job Title**")
-                                st.write(contact.get("title","—"))
+                                st.write(title_disp)
                             with cc2:
                                 st.markdown("**Why Target Them**")
                                 st.write(contact.get("why","—"))
-                            li_q = contact.get("linkedin_search","")
-                            if li_q:
-                                li_url = (
-                                    "https://www.linkedin.com/search/results/people/?keywords=" +
-                                    li_q.replace(" ","%20")
-                                )
-                                st.markdown("[Find on LinkedIn](" + li_url + ")")
+                            li_url = contact.get("linkedin_url") or linkedin_profile_search_url(contact.get("search_query",""))
+                            if li_url:
+                                st.markdown("[Find on LinkedIn (Google profile search)](" + li_url + ")")
 
                 st.markdown("**Best contact role:**   " + (intel.get("best_contact_title") or "—"))
                 st.markdown("**Pitch angle:**   " + (intel.get("pitch_angle") or "—"))
@@ -711,6 +974,13 @@ with tab2:
                     st.session_state["current_company"]  = company_input
                     st.session_state["chat_history"]     = []
                     st.session_state["prefill"]          = ""
+                    # Clear any stale per-message edit widgets so the new content shows
+                    for mk in ["linkedin_dm", "cold_email", "followup", "connection_note"]:
+                        widget_key = "msg_edit_" + mk
+                        if widget_key in st.session_state:
+                            del st.session_state[widget_key]
+                        chat_key = "chat_" + mk
+                        st.session_state[chat_key] = []
 
                     st.success(
                         "Research and messages ready. "
@@ -752,12 +1022,12 @@ with tab3:
         if contacts:
             st.markdown("**Send to:**")
             for c in contacts[:3]:
-                li_q = c.get("linkedin_search","")
-                li_url = (
-                    "https://www.linkedin.com/search/results/people/?keywords=" +
-                    li_q.replace(" ","%20")
-                ) if li_q else ""
-                line = "— " + c.get("title","")
+                li_url = c.get("linkedin_url") or linkedin_profile_search_url(c.get("search_query",""))
+                title_disp = c.get("title","") or ""
+                name_disp  = c.get("name","") or ""
+                line = "— " + title_disp
+                if name_disp:
+                    line = "— **" + name_disp + "** — " + title_disp
                 if li_url:
                     line += "   [Find on LinkedIn](" + li_url + ")"
                 st.markdown(line)
@@ -788,19 +1058,20 @@ with tab3:
         for tab_idx, msg_tab in enumerate([mt1, mt2, mt3, mt4]):
             msg_key, msg_label = msg_type_map[tab_idx]
             with msg_tab:
-                current_text = messages.get(msg_key,"")
+                widget_key = "msg_edit_" + msg_key
+                # Initialise widget value from current_messages on first render
+                if widget_key not in st.session_state:
+                    st.session_state[widget_key] = messages.get(msg_key, "")
 
-                # Message display
                 edited = st.text_area(
                     msg_label,
-                    current_text,
                     height=200 if msg_key != "connection_note" else 120,
-                    key="msg_edit_" + msg_key
+                    key=widget_key
                 )
 
-                # Update session if manually edited
-                if edited != current_text:
-                    st.session_state["current_messages"][msg_key] = edited
+                # Sync widget value back into current_messages for saving
+                if st.session_state[widget_key] != messages.get(msg_key, ""):
+                    st.session_state["current_messages"][msg_key] = st.session_state[widget_key]
 
                 st.markdown("---")
 
@@ -808,10 +1079,10 @@ with tab3:
                 st.markdown("**AI Message Assistant**")
                 st.caption(
                     "Tell the AI how to improve this specific message. "
-                    "It will rewrite it for you instantly."
+                    "It will rewrite it for you and apply it on confirmation."
                 )
 
-                # Quick action buttons
+                # Quick action buttons (auto-apply the rewrite)
                 qa1, qa2, qa3, qa4 = st.columns(4)
                 quick_actions = {
                     "Make it shorter"      : qa1,
@@ -823,20 +1094,28 @@ with tab3:
                 for action_label, action_col in quick_actions.items():
                     with action_col:
                         if st.button(action_label, key="qa_" + msg_key + "_" + action_label.replace(" ","_")):
-                            chat_sys = build_chat_system_prompt(intel, msg_key, messages.get(msg_key,""))
+                            chat_sys = build_chat_system_prompt(
+                                intel, msg_key,
+                                st.session_state["current_messages"].get(msg_key, "")
+                            )
                             history  = [
-                                {"role": "system",    "content": chat_sys},
-                                {"role": "user",      "content": action_label + ". Return only the rewritten message, no explanation."}
+                                {"role": "system", "content": chat_sys},
+                                {"role": "user",   "content": action_label + ". Return only the rewritten message in the JSON format described."}
                             ]
                             with st.spinner("Rewriting..."):
-                                new_msg = ask_ai_chat(history)
-                            if not new_msg.startswith("ERROR"):
-                                st.session_state["current_messages"][msg_key] = new_msg
-                                st.rerun()
+                                raw = ask_ai_chat_json(history)
+                            if isinstance(raw, str) and raw.startswith("ERROR"):
+                                st.error(raw)
                             else:
-                                st.error(new_msg)
+                                intent, content = parse_chat_response(raw)
+                                new_msg = content if content else ""
+                                if new_msg:
+                                    # Programmatically update the widget BEFORE next render
+                                    st.session_state[widget_key] = new_msg
+                                    st.session_state["current_messages"][msg_key] = new_msg
+                                    st.rerun()
 
-                # Chat history display for this message type
+                # Chat history display
                 chat_key = "chat_" + msg_key
                 if chat_key not in st.session_state:
                     st.session_state[chat_key] = []
@@ -851,52 +1130,76 @@ with tab3:
                                 unsafe_allow_html=True
                             )
                         else:
+                            label_html = "Foundree42 AI"
+                            if entry.get("intent") == "rewrite":
+                                label_html += " — proposed rewrite"
                             st.markdown(
-                                "<div class='chat-label-ai'>Foundree42 AI</div>"
-                                "<div class='chat-ai'>" + entry["content"] + "</div>",
+                                "<div class='chat-label-ai'>" + label_html + "</div>"
+                                "<div class='chat-ai'>" + entry["content"].replace("\n", "<br>") + "</div>",
                                 unsafe_allow_html=True
                             )
+                            # Apply button for proposed rewrites
+                            if entry.get("intent") == "rewrite" and not entry.get("applied"):
+                                btn_id = "apply_" + msg_key + "_" + str(entry.get("ts",""))
+                                if st.button("Apply this as the new " + msg_label, key=btn_id):
+                                    st.session_state[widget_key] = entry["content"]
+                                    st.session_state["current_messages"][msg_key] = entry["content"]
+                                    entry["applied"] = True
+                                    st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
-                # Chat input
+                # Chat input — uses a session-keyed input we can clear after send
+                input_key = "chat_input_" + msg_key
+                if input_key not in st.session_state:
+                    st.session_state[input_key] = ""
+
                 chat_input = st.text_input(
                     "Ask the AI to refine this message",
                     placeholder="e.g. Reference their recent Series B funding... make it shorter... change the CTA...",
-                    key="chat_input_" + msg_key
+                    key=input_key
                 )
 
                 send_col, clear_col = st.columns([3,1])
                 with send_col:
                     if st.button("Send", key="chat_send_" + msg_key):
-                        if chat_input.strip():
-                            chat_sys  = build_chat_system_prompt(intel, msg_key, messages.get(msg_key,""))
-                            history   = [{"role": "system", "content": chat_sys}]
-
-                            # Add previous conversation
+                        user_text = (st.session_state.get(input_key) or "").strip()
+                        if user_text:
+                            chat_sys = build_chat_system_prompt(
+                                intel, msg_key,
+                                st.session_state["current_messages"].get(msg_key, "")
+                            )
+                            history = [{"role": "system", "content": chat_sys}]
                             for entry in st.session_state[chat_key]:
+                                # Pass prior chat as plain content, not nested JSON
                                 history.append({"role": entry["role"], "content": entry["content"]})
-
-                            # Add new user message
-                            history.append({"role": "user", "content": chat_input.strip()})
+                            history.append({"role": "user", "content": user_text})
 
                             with st.spinner("Thinking..."):
-                                ai_response = ask_ai_chat(history)
+                                raw = ask_ai_chat_json(history)
 
-                            # Save to chat history
-                            st.session_state[chat_key].append({"role": "user",      "content": chat_input.strip()})
-                            st.session_state[chat_key].append({"role": "assistant",  "content": ai_response})
-
-                            # If response looks like a rewritten message (long text), update the message
-                            if (not ai_response.startswith("ERROR") and
-                                    len(ai_response) > 80 and
-                                    "?" not in ai_response[:50]):
-                                st.session_state["current_messages"][msg_key] = ai_response
-
-                            st.rerun()
+                            if isinstance(raw, str) and raw.startswith("ERROR"):
+                                st.error(raw)
+                            else:
+                                intent, content = parse_chat_response(raw)
+                                ts = datetime.now().strftime("%H%M%S%f")
+                                st.session_state[chat_key].append({
+                                    "role": "user", "content": user_text, "ts": ts
+                                })
+                                st.session_state[chat_key].append({
+                                    "role": "assistant",
+                                    "content": content or "(no content returned)",
+                                    "intent": intent,
+                                    "ts": ts,
+                                    "applied": False
+                                })
+                                # Clear the input widget for next turn
+                                st.session_state[input_key] = ""
+                                st.rerun()
 
                 with clear_col:
                     if st.button("Clear chat", key="chat_clear_" + msg_key):
                         st.session_state[chat_key] = []
+                        st.session_state[input_key] = ""
                         st.rerun()
 
         st.markdown("---")
@@ -921,10 +1224,13 @@ with tab3:
                 st.session_state["current_messages"] = None
                 st.session_state["current_company"]  = ""
                 st.session_state["prefill"]          = ""
-                # Clear all chat histories
+                # Clear all chat histories and message edit widgets
                 for key in list(st.session_state.keys()):
-                    if key.startswith("chat_"):
-                        st.session_state[key] = []
+                    if key.startswith("chat_") or key.startswith("msg_edit_") or key.startswith("chat_input_"):
+                        if isinstance(st.session_state[key], list):
+                            st.session_state[key] = []
+                        else:
+                            del st.session_state[key]
                 st.rerun()
 
 # ════════════════════════════════════════════════
@@ -1010,18 +1316,22 @@ with tab4:
                     st.markdown("**Pitch Angle**")
                     st.write(lead.get("pitch_angle"))
 
+                breakdown = lead.get("score_breakdown") or []
+                if breakdown:
+                    with st.expander("Score breakdown", expanded=False):
+                        for r in breakdown:
+                            st.markdown("— " + str(r))
+
                 # Ideal contacts
                 contacts = lead.get("ideal_contacts",[])
                 if contacts:
                     st.markdown("---")
                     st.markdown("**Ideal Contacts**")
                     for c in contacts:
-                        li_q   = c.get("linkedin_search","")
-                        li_url = (
-                            "https://www.linkedin.com/search/results/people/?keywords=" +
-                            li_q.replace(" ","%20")
-                        ) if li_q else ""
-                        line   = "— **" + (c.get("name") or "Unknown") + "** — " + (c.get("title") or "")
+                        li_url = c.get("linkedin_url") or linkedin_profile_search_url(c.get("search_query",""))
+                        title_disp = c.get("title","") or ""
+                        name_disp  = c.get("name","") or "(role only)"
+                        line = "— **" + name_disp + "** — " + title_disp
                         if li_url:
                             line += "   [Find on LinkedIn](" + li_url + ")"
                         st.markdown(line)
